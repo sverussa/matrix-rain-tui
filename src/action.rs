@@ -25,4 +25,10 @@ pub enum Action {
     RunCommand(String),
     /// Abre a trava de saída.
     RequestExit,
+    /// Salva as configurações atuais (snapshot + `config.toml`).
+    Apply,
+    /// Volta ao snapshot (abertura do console ou último Aplicar).
+    Discard,
+    /// Volta a `Settings::default()` (sem salvar).
+    ResetDefaults,
 }

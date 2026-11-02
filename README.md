@@ -46,6 +46,14 @@ A chuva sozinha é o modo **Idle**. Nele valem os atalhos de uma tecla:
 
 No **console** a chuva continua ao fundo, atenuada. `↑↓` escolhe a categoria na barra lateral, `Enter` entra na página, `↑↓` escolhe o item, `←→`/`Enter` ajusta (a chuva muda na hora) e `Esc` volta um nível até fechar o console. `:` foca a linha de comando. `Ctrl+C` ou a página **SAIR** abrem a trava. Depois de 60 s sem tecla o console se fecha sozinho (a menos que haja texto na linha de comando).
 
+Menus: **VÍDEO** (tema, velocidade, tela cheia, HUD), **CHUVA** (rastro, densidade, pausar, reiniciar), **MENSAGENS** (automáticas, intervalo, mostrar agora), **ATALHOS** (mapa de teclas), **ACESSIB.** (reduzir movimento = sem troca de caracteres nos rastros; alto contraste), **LOG** (eventos recentes) e **SAIR**.
+
+## Configuração
+
+Tudo muda ao vivo. Nas páginas de ajuste, **APLICAR** salva, **DESCARTAR** volta ao estado de quando o console abriu (ou do último Aplicar) e **PADRÕES** (Enter duas vezes) volta aos valores de fábrica sem salvar. O breadcrumb mostra `● alterações` enquanto houver algo não aplicado.
+
+O arquivo é `config.toml` no diretório de configuração do SO (`~/.config/matrix-rain/` no Linux, `~/Library/Application Support/matrix-rain/` no macOS). Campos ausentes usam o padrão; arquivo inválido é ignorado (padrões) e registrado no LOG.
+
 ## Temas
 
 1. **MATRIX** — verde clássico
@@ -61,7 +69,7 @@ No **console** a chuva continua ao fundo, atenuada. `↑↓` escolhe a categoria
 
 ## Mensagens escondidas
 
-De tempos em tempos (a cada 5 minutos, ou ao apertar `w`) uma mensagem em letras grandes é pintada pela própria chuva: cada rastro que passa por uma célula da letra deixa ali o seu caractere, que fica parado e brilhante. Com a mensagem completa, ela fica alguns segundos na tela e depois os rastros seguintes vão lavando as letras até a chuva voltar ao normal. Só uma mensagem aparece por vez.
+De tempos em tempos (a cada 5 minutos por padrão, ajustável em MENSAGENS, ou ao apertar `w`) uma mensagem em letras grandes é pintada pela própria chuva: cada rastro que passa por uma célula da letra deixa ali o seu caractere, que fica parado e brilhante. Com a mensagem completa, ela fica alguns segundos na tela e depois os rastros seguintes vão lavando as letras até a chuva voltar ao normal. Só uma mensagem aparece por vez.
 
 Elas só aparecem no Idle. As mensagens ficam na lista `MESSAGES` em `src/core/message.rs`: `VERUSSA`, `SUDO RM -RF /`, `WHOAMI`, `CHMOD 777`, `KILL -9` e `LS -LA`. Para adicionar uma nova, use só letras que existem na fonte (função `glyph`) ou desenhe as que faltarem.
 
@@ -70,6 +78,7 @@ Elas só aparecem no Idle. As mensagens ficam na lista `MESSAGES` em `src/core/m
 - **`core/`** — simulação sem dependência de terminal: `Field` e `Rng` (`rain.rs`), temas e paleta de 16 níveis (`theme.rs`), mensagens escondidas (`message.rs`).
 - **`ui/`** — widgets ratatui: `RainWidget` escreve a chuva direto no `Buffer`; `shell.rs` (layout do console), `footer.rs` (status e dicas), `lock.rs` (trava de saída).
 - **`pages/`** — um arquivo por menu. Cada página implementa a trait `Page`; a maioria é uma `SettingsPage` com uma lista de `Item` (toggle, slider, escolha, botão). Para adicionar um menu, crie o arquivo e acrescente uma linha em `pages::registry()`.
+- **`config.rs`** — `Settings` ⇄ `config.toml` (serde + toml + directories).
 - **`app.rs`** — `App` e os modos `Idle`, `Console` e `Lock`. Fluxo único: tecla → `Action` (`action.rs`) → `App::update` → `App::view`.
 - **`main.rs`** — loop a ~60 FPS: lê entrada sem bloquear, avança a simulação com o `dt` real e chama `Terminal::draw`.
 

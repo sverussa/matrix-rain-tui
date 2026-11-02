@@ -1,6 +1,11 @@
 //! Menus da barra lateral. Ponto de extensão: um arquivo por menu + uma linha em `registry()`.
 
+pub mod a11y;
 pub mod exit;
+pub mod keys;
+pub mod log;
+pub mod messages;
+pub mod rain;
 pub mod video;
 
 use std::ops::RangeInclusive;
@@ -17,18 +22,51 @@ use crate::app::Settings;
 
 /// Páginas registradas, na ordem da barra lateral.
 pub fn registry() -> Vec<Box<dyn Page>> {
-    vec![Box::new(video::page()), Box::new(exit::page())]
+    vec![
+        Box::new(video::page()),
+        Box::new(rain::page()),
+        Box::new(messages::page()),
+        Box::new(keys::KeysPage),
+        Box::new(a11y::page()),
+        Box::new(log::LogPage),
+        Box::new(exit::page()),
+    ]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PageId {
     Video,
+    Rain,
+    Messages,
+    Keys,
+    A11y,
+    Log,
     Exit,
 }
+
+/// APLICAR / DESCARTAR / PADRÕES, no fim de cada página de ajustes.
+pub fn apply_buttons() -> [Item; 3] {
+    [
+        Item::button("APLICAR", || Action::Apply, false),
+        Item::button("DESCARTAR", || Action::Discard, false),
+        Item::button("PADRÕES", || Action::ResetDefaults, true),
+    ]
+}
+
+/// Página só-leitura: uma linha de texto por linha da área (corta o que não couber).
+pub fn render_lines(area: Rect, buf: &mut Buffer, lines: impl Iterator<Item = String>, accent: Color) {
+    for (y, text) in (area.y + 1..area.bottom()).zip(lines) {
+        Line::styled(format!("   {text}"), Style::new().fg(accent)).render(Rect::new(area.x, y, area.width, 1), buf);
+    }
+}
+
+pub const READONLY_HINTS: &[(&str, &str)] = &[("Esc", "voltar"), (":", "comando")];
 
 /// O que uma página pode ler do app (só leitura: mudanças voltam como `Action`).
 pub struct Ctx<'a> {
     pub settings: &'a Settings,
+    /// Eventos recentes (página LOG).
+    pub log: &'a [String],
     pub accent: Color,
     /// A página tem o foco do teclado.
     pub focused: bool,

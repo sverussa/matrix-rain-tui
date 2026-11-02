@@ -1,10 +1,16 @@
 //! Simulação da chuva: grade de caracteres e uma gota por coluna.
 
+use std::ops::RangeInclusive;
+
 use super::theme::FALLOFF_STEPS;
 
 /// Velocidade base de cada gota (linhas por segundo), antes do multiplicador.
 const DROP_SPEED_MIN: f32 = 6.0;
 const DROP_SPEED_MAX: f32 = 30.0;
+/// Multiplicador do comprimento do rastro.
+pub const TRAIL: RangeInclusive<f32> = 0.3..=2.0;
+/// Densidade: 1.0 = normal; maior → menos espaço entre uma gota e a próxima da coluna.
+pub const DENSITY: RangeInclusive<f32> = 0.25..=3.0;
 
 /// Katakana half-width + dígitos + símbolos (single-width na maioria dos terminais).
 pub const CHARSET: &[char] = &[
@@ -78,6 +84,10 @@ pub struct Field {
     drops: Vec<Drop>,
     trail_min: f32,
     trail_max: f32,
+    /// Ajustes vindos das configurações (ver `tune`).
+    trail: f32,
+    density: f32,
+    flicker: bool,
 }
 
 impl Field {
@@ -102,7 +112,17 @@ impl Field {
             });
         }
 
-        Self { cols, rows, glyphs, drops, trail_min, trail_max }
+        Self { cols, rows, glyphs, drops, trail_min, trail_max, trail: 1.0, density: 1.0, flicker: true }
+    }
+
+    /// Rastro vale na hora (reescala as gotas atuais); densidade a partir da próxima gota.
+    /// `flicker` = troca aleatória de caracteres dentro dos rastros.
+    pub fn tune(&mut self, trail: f32, density: f32, flicker: bool) {
+        let k = trail / self.trail;
+        for d in &mut self.drops {
+            d.len *= k;
+        }
+        (self.trail, self.density, self.flicker) = (trail, density, flicker);
     }
 
     /// Avança a simulação. `dt` em segundos, `speed_mul` = multiplicador global.
@@ -112,7 +132,8 @@ impl Field {
         }
         let cols = self.cols;
         let rows = self.rows;
-        let (trail_min, trail_max) = (self.trail_min, self.trail_max);
+        let (trail_min, trail_max) = (self.trail_min * self.trail, self.trail_max * self.trail);
+        let density = self.density;
 
         // Borrows disjuntos: campos diferentes de `self`.
         let glyphs = &mut self.glyphs;
@@ -131,10 +152,13 @@ impl Field {
             }
 
             if drop.head - drop.len > rows as f32 {
-                respawn(drop, rng, trail_min, trail_max);
+                respawn(drop, rng, trail_min, trail_max, density);
             }
         }
 
+        if !self.flicker {
+            return;
+        }
         let mutations = (cols as f32 * dt * 8.0 * speed_mul.clamp(0.5, 3.0)) as usize;
         for _ in 0..mutations {
             let x = rng.below(cols);
@@ -170,8 +194,8 @@ impl Field {
     }
 }
 
-fn respawn(drop: &mut Drop, rng: &mut Rng, trail_min: f32, trail_max: f32) {
+fn respawn(drop: &mut Drop, rng: &mut Rng, trail_min: f32, trail_max: f32, density: f32) {
     drop.len = rng.range(trail_min, trail_max).max(2.0);
     drop.speed = rng.range(DROP_SPEED_MIN, DROP_SPEED_MAX);
-    drop.head = -rng.range(0.0, drop.len * 2.0) - 1.0;
+    drop.head = -rng.range(0.0, drop.len * 2.0 / density) - 1.0;
 }

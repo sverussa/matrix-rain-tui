@@ -1,5 +1,6 @@
 //! Mensagens escondidas: texto em letras grandes pintado pela própria chuva.
 
+use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
 use super::rain::Field;
@@ -15,8 +16,10 @@ pub const MESSAGES: &[&str] = &[
     "LS -LA",
 ];
 
-/// Intervalo da mensagem automática.
+/// Intervalo padrão da mensagem automática.
 pub const MSG_EVERY: Duration = Duration::from_secs(5 * 60);
+/// Intervalo configurável, em minutos.
+pub const MSG_MINUTES: RangeInclusive<f32> = 1.0..=60.0;
 /// Tempo máximo para a chuva pintar a mensagem (o que faltar é completado).
 const MSG_BUILD_MAX: Duration = Duration::from_secs(12);
 /// Tempo com a mensagem completa na tela.

@@ -6,6 +6,10 @@ edition = "2021"
 [dependencies]
 # Usa o crossterm re-exportado (`ratatui::crossterm`, 0.29): uma só versão no build.
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.6"
+# Configuração persistente (config.toml no diretório de config do SO).
+directories = "6.0.0"
 
 # Otimizações de release: binário menor, loop mais rápido.
 [profile.release]
