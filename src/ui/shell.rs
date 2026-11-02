@@ -13,7 +13,8 @@ const COMPACT_W: u16 = 100;
 
 pub const SIDEBAR_HINTS: &[(&str, &str)] =
     &[("↑↓", "categoria"), ("Enter", "abrir"), ("Esc", "fechar"), (":", "comando"), ("Ctrl+C", "sair")];
-pub const PROMPT_HINTS: &[(&str, &str)] = &[("Enter", "executar"), ("Esc", "cancelar")];
+pub const PROMPT_HINTS: &[(&str, &str)] =
+    &[("Enter", "executar"), ("Tab", "completar"), ("↑↓", "histórico"), ("Esc", "cancelar")];
 
 pub struct Regions {
     pub outer: Rect,
@@ -90,7 +91,7 @@ pub fn sidebar(area: Rect, buf: &mut Buffer, pages: &[Box<dyn Page>], sel: usize
     }
 }
 
-/// Linha de comando `> texto█`. O texto é editado em `App`; a execução fica para `commands/`.
+/// Linha de comando `> texto█`. O texto é editado em `App`; a execução fica em `commands/`.
 pub fn prompt(area: Rect, buf: &mut Buffer, text: &str, focused: bool, accent: Color, dim: Color) {
     let line = if focused {
         Line::styled(format!(" > {text}█"), Style::new().fg(accent))

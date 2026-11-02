@@ -2,6 +2,7 @@
 //!
 //! Fluxo: tecla → `Action` (por modo) → `App::update` (único lugar que muda o estado) → `view`.
 
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -12,10 +13,12 @@ use ratatui::widgets::{Block, Widget};
 use ratatui::Frame;
 
 use crate::action::Action;
+use crate::commands;
 use crate::core::message::{Message, MESSAGES, MSG_EVERY};
 use crate::core::rain::{Field, Rng};
 use crate::core::theme::{Palette, THEMES};
 use crate::pages::{self, Ctx, Page};
+use crate::sys::SysSnapshot;
 use crate::ui::footer::{self, Status};
 use crate::ui::lock::{LockKey, Unlock};
 use crate::ui::rain::{color, scaled, RainWidget};
@@ -31,6 +34,8 @@ const CONSOLE_DIM: f32 = 0.35;
 /// Abaixo disto o console mostra só um aviso.
 const MIN_W: u16 = 60;
 const MIN_H: u16 = 20;
+/// Linhas guardadas no histórico do prompt (só em memória).
+const HISTORY: usize = 50;
 
 /// Configurações vivas (o que os menus editam).
 #[derive(Clone, Debug, PartialEq)]
@@ -86,6 +91,14 @@ pub struct App {
     pub page: usize,
     /// Texto da linha de comando.
     pub prompt: String,
+    /// Comandos já executados (o mais recente no fim) e a posição ao navegar com ↑↓.
+    pub history: Vec<String>,
+    hist_pos: Option<usize>,
+    /// Saída do último comando (ou erro), acima do prompt.
+    pub feedback: String,
+    /// Último snapshot do `SysMonitor` e o canal de onde ele vem (`main` liga o canal).
+    pub sys: Option<SysSnapshot>,
+    pub sys_rx: Option<Receiver<SysSnapshot>>,
     pub fps: f32,
     pub field: Field,
     pub rng: Rng,
@@ -116,6 +129,11 @@ impl App {
             pages: pages::registry(),
             page: 0,
             prompt: String::new(),
+            history: Vec::new(),
+            hist_pos: None,
+            feedback: String::new(),
+            sys: None,
+            sys_rx: None,
             fps: 0.0,
             field,
             rng,
@@ -170,6 +188,12 @@ impl App {
 
     /// Avança um frame: `dt` em segundos desde o anterior.
     pub fn tick(&mut self, dt: f32, now: Instant) {
+        // Snapshot novo do monitor, sem bloquear: fica só o mais recente.
+        if let Some(rx) = &self.sys_rx {
+            while let Ok(s) = rx.try_recv() {
+                self.sys = Some(s);
+            }
+        }
         if dt > 0.0 {
             self.fps = self.fps * 0.9 + (1.0 / dt) * 0.1;
         }
@@ -237,6 +261,26 @@ impl App {
         match (self.focus, key.code) {
             (_, KeyCode::Esc) => Some(Action::Back),
             (Focus::Prompt, KeyCode::Enter) => Some(Action::RunCommand(self.prompt.clone())),
+            (Focus::Prompt, KeyCode::Tab) => {
+                let ctx = Ctx { settings: &self.settings, accent: color(self.palette.accent), focused: false, sys: self.sys.as_ref() };
+                let (line, options) = commands::complete(&self.prompt, &ctx);
+                self.prompt = line;
+                if !options.is_empty() {
+                    self.feedback = options.join("  ");
+                }
+                None
+            }
+            (Focus::Prompt, KeyCode::Up | KeyCode::Down) if !self.history.is_empty() => {
+                let last = self.history.len() - 1;
+                self.hist_pos = match (key.code, self.hist_pos) {
+                    (KeyCode::Up, None) => Some(last),
+                    (KeyCode::Up, Some(i)) => Some(i.saturating_sub(1)),
+                    (_, Some(i)) if i < last => Some(i + 1),
+                    _ => None, // ↓ depois do mais recente: linha vazia
+                };
+                self.prompt = self.hist_pos.map_or_else(String::new, |i| self.history[i].clone());
+                None
+            }
             (Focus::Prompt, KeyCode::Backspace) => {
                 self.prompt.pop();
                 None
@@ -255,7 +299,7 @@ impl App {
             }
             (Focus::Sidebar, _) => None,
             (Focus::Page, _) => {
-                let ctx = Ctx { settings: &self.settings, accent: color(self.palette.accent), focused: true };
+                let ctx = Ctx { settings: &self.settings, accent: color(self.palette.accent), focused: true, sys: self.sys.as_ref() };
                 self.pages[self.page].on_key(key, &ctx)
             }
         }
@@ -291,6 +335,8 @@ impl App {
             Action::Back => match (&self.mode, self.focus) {
                 (Mode::Console, Focus::Prompt) => {
                     self.prompt.clear();
+                    self.feedback.clear();
+                    self.hist_pos = None;
                     self.focus = Focus::Sidebar;
                 }
                 (Mode::Console, Focus::Page) => self.focus = Focus::Sidebar,
@@ -298,8 +344,26 @@ impl App {
                 (Mode::Lock { from_console: true, .. }, _) => self.mode = Mode::Console,
                 (Mode::Lock { .. } | Mode::Idle, _) => self.mode = Mode::Idle,
             },
-            // Ponto de extensão: `commands/` interpreta a linha e devolve outra `Action`.
-            Action::RunCommand(_) => self.prompt.clear(),
+            // `commands/` interpreta a linha e devolve outra `Action`, que passa por aqui de novo.
+            Action::RunCommand(line) => {
+                self.prompt.clear();
+                self.hist_pos = None;
+                self.feedback.clear();
+                let line = line.trim();
+                if !line.is_empty() && self.history.last().map(String::as_str) != Some(line) {
+                    if self.history.len() == HISTORY {
+                        self.history.remove(0);
+                    }
+                    self.history.push(line.to_string());
+                }
+                let ctx = Ctx { settings: &self.settings, accent: color(self.palette.accent), focused: false, sys: self.sys.as_ref() };
+                match commands::run(line, &ctx) {
+                    Ok(Some(next)) => self.update(next, now),
+                    Ok(None) => {}
+                    Err(e) => self.feedback = format!("erro: {e}"),
+                }
+            }
+            Action::Feedback(text) => self.feedback = text,
             Action::RequestExit => {
                 let from_console = matches!(self.mode, Mode::Console);
                 self.mode = Mode::Lock { unlock: Unlock::new(now), from_console };
@@ -382,10 +446,14 @@ impl App {
         let crumb = format!("CONSOLE › {}", self.pages[self.page].title());
         shell::frame(&r, buf, &crumb, footer::hints(hints, accent, dim), accent, dim);
         shell::sidebar(r.sidebar, buf, &self.pages, self.page, self.focus == Focus::Sidebar, accent);
-        let ctx = Ctx { settings: &self.settings, accent, focused: self.focus == Focus::Page };
+        let ctx = Ctx { settings: &self.settings, accent, focused: self.focus == Focus::Page, sys: self.sys.as_ref() };
         self.pages[self.page].render(r.workspace, buf, &ctx);
+        if !self.feedback.is_empty() {
+            let row = Rect { y: r.workspace.bottom().saturating_sub(1), height: 1, ..r.workspace };
+            Line::styled(format!(" {}", self.feedback), Style::new().fg(dim)).render(row, buf);
+        }
         shell::prompt(r.prompt, buf, &self.prompt, self.focus == Focus::Prompt, accent, dim);
-        footer::render(r.footer, buf, &Status { fps: self.fps }, dim);
+        footer::render(r.footer, buf, &Status { fps: self.fps, sys: self.sys.as_ref() }, dim);
     }
 }
 
@@ -488,7 +556,7 @@ mod tests {
         let mut app = App::new(160, 48, Rng::new(1));
         k(&mut app, KeyCode::Enter);
         assert_eq!(app.pages[app.page].id(), PageId::Video);
-        k(&mut app, KeyCode::Down);
+        k(&mut app, KeyCode::Up); // dá a volta: SAIR é a última
         assert_eq!(app.pages[app.page].id(), PageId::Exit);
         assert!(screen(&mut app, 160, 48).contains("CONSOLE › SAIR"));
         k(&mut app, KeyCode::Down); // dá a volta
@@ -531,6 +599,80 @@ mod tests {
         k(&mut app, KeyCode::Down); // HUD
         k(&mut app, KeyCode::Char(' '));
         assert!(app.settings.hud);
+    }
+
+    #[test]
+    fn prompt_commands_history_and_tab() {
+        let mut app = App::new(160, 48, Rng::new(1));
+        k(&mut app, KeyCode::Char(':'));
+        press(&mut app, "th");
+        k(&mut app, KeyCode::Tab);
+        assert_eq!(app.prompt, "theme ");
+        press(&mut app, "dra");
+        k(&mut app, KeyCode::Tab);
+        k(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings.theme, 6);
+        assert!(app.prompt.is_empty() && app.focus == Focus::Prompt);
+
+        press(&mut app, "speed 2");
+        k(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings.speed, 2.0);
+        press(&mut app, "bogus");
+        k(&mut app, KeyCode::Enter);
+        assert!(screen(&mut app, 160, 48).contains("erro: comando desconhecido: bogus"));
+        press(&mut app, "help");
+        k(&mut app, KeyCode::Enter);
+        assert!(app.feedback.starts_with("comandos:"));
+        press(&mut app, "clear");
+        k(&mut app, KeyCode::Enter);
+        assert!(app.feedback.is_empty());
+        k(&mut app, KeyCode::Enter); // linha vazia: não entra no histórico
+        assert_eq!(app.history, ["theme dracula", "speed 2", "bogus", "help", "clear"]);
+
+        // ↑↓ percorre o histórico; ↓ depois do último volta à linha vazia.
+        k(&mut app, KeyCode::Up);
+        assert_eq!(app.prompt, "clear");
+        k(&mut app, KeyCode::Up);
+        k(&mut app, KeyCode::Up);
+        assert_eq!(app.prompt, "bogus");
+        k(&mut app, KeyCode::Down);
+        assert_eq!(app.prompt, "help");
+        k(&mut app, KeyCode::Down);
+        k(&mut app, KeyCode::Down);
+        assert!(app.prompt.is_empty());
+        for _ in 0..10 {
+            k(&mut app, KeyCode::Up); // para no mais antigo
+        }
+        assert_eq!(app.prompt, "theme dracula");
+
+        // Repetido em sequência não duplica; o histórico é limitado.
+        for i in 0..HISTORY + 5 {
+            app.update(Action::RunCommand(format!("speed {}", 1 + i % 2)), Instant::now());
+            app.update(Action::RunCommand(format!("speed {}", 1 + i % 2)), Instant::now());
+        }
+        assert_eq!(app.history.len(), HISTORY);
+
+        // `open` navega; `exit` só abre a trava.
+        app.update(Action::RunCommand("open system".into()), Instant::now());
+        assert_eq!(app.pages[app.page].id(), PageId::System);
+        app.update(Action::RunCommand("exit".into()), Instant::now());
+        assert!(matches!(app.mode, Mode::Lock { from_console: true, .. }));
+    }
+
+    #[test]
+    fn system_page_shows_snapshot() {
+        let mut app = App::new(160, 48, Rng::new(1));
+        app.update(Action::Navigate(PageId::System), Instant::now());
+        assert!(screen(&mut app, 160, 48).contains("coletando dados"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.sys_rx = Some(rx);
+        let snap = SysSnapshot { cpu: 42.0, cpu_hist: vec![42.0], cores: vec![10.0, 90.0], mem_total: 16 << 30, mem_used: 8 << 30, load: [0.5, 0.4, 0.3], uptime: 3700 };
+        tx.send(snap).unwrap();
+        app.tick(0.0, Instant::now());
+        let s = screen(&mut app, 160, 48);
+        for text in ["CPU       42.0%", "8.0 / 16.0 GiB", "50%", "0.50  0.40  0.30", "01h01m", "NÚCLEOS  2", "#1", "CPU ▄ 42%", "MEM 8.0/16G"] {
+            assert!(s.contains(text), "falta {text:?}\n{s}");
+        }
     }
 
     #[test]

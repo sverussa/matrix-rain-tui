@@ -25,4 +25,6 @@ pub enum Action {
     RunCommand(String),
     /// Abre a trava de saída.
     RequestExit,
+    /// Texto na linha de mensagens do console (saída de comando; vazio limpa).
+    Feedback(String),
 }

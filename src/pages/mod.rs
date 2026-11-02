@@ -1,6 +1,7 @@
 //! Menus da barra lateral. Ponto de extensão: um arquivo por menu + uma linha em `registry()`.
 
 pub mod exit;
+pub mod system;
 pub mod video;
 
 use std::ops::RangeInclusive;
@@ -14,15 +15,17 @@ use ratatui::widgets::Widget;
 
 use crate::action::Action;
 use crate::app::Settings;
+use crate::sys::SysSnapshot;
 
 /// Páginas registradas, na ordem da barra lateral.
 pub fn registry() -> Vec<Box<dyn Page>> {
-    vec![Box::new(video::page()), Box::new(exit::page())]
+    vec![Box::new(video::page()), Box::new(system::SystemPage), Box::new(exit::page())]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PageId {
     Video,
+    System,
     Exit,
 }
 
@@ -32,6 +35,8 @@ pub struct Ctx<'a> {
     pub accent: Color,
     /// A página tem o foco do teclado.
     pub focused: bool,
+    /// Último snapshot do `SysMonitor` (`None` até chegar o primeiro).
+    pub sys: Option<&'a SysSnapshot>,
 }
 
 pub const DEFAULT_HINTS: &[(&str, &str)] =

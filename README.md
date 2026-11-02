@@ -46,6 +46,21 @@ A chuva sozinha é o modo **Idle**. Nele valem os atalhos de uma tecla:
 
 No **console** a chuva continua ao fundo, atenuada. `↑↓` escolhe a categoria na barra lateral, `Enter` entra na página, `↑↓` escolhe o item, `←→`/`Enter` ajusta (a chuva muda na hora) e `Esc` volta um nível até fechar o console. `:` foca a linha de comando. `Ctrl+C` ou a página **SAIR** abrem a trava. Depois de 60 s sem tecla o console se fecha sozinho (a menos que haja texto na linha de comando).
 
+A página **SISTEMA** mostra CPU (total, histórico e por núcleo), memória, load average e uptime. O rodapé do console mostra o resumo (CPU com sparkline, MEM, LOAD, UP, FPS e relógio UTC); o que não cabe na largura some por ordem de prioridade.
+
+### Linha de comando
+
+`:` abre o prompt. `Tab` completa o comando e o argumento (temas, páginas), `↑↓` percorre o histórico da sessão e a saída ou o erro aparece logo acima do prompt.
+
+| Comando | Ação |
+|---------|------|
+| `theme <n\|nome>` | Troca o tema (`theme 7`, `theme dracula`) |
+| `speed <x>` | Velocidade da chuva (`speed 1.5`) |
+| `pause`, `fullscreen` (`fs`), `hud`, `msg`, `restart` | Mesmo que os atalhos do Idle |
+| `open <página>` | Abre uma página (`open system`) |
+| `help [comando]`, `clear` | Ajuda / limpa a linha de mensagens |
+| `exit` (`quit`, `q`) | Abre a trava de saída |
+
 ## Temas
 
 1. **MATRIX** — verde clássico
@@ -70,6 +85,8 @@ Elas só aparecem no Idle. As mensagens ficam na lista `MESSAGES` em `src/core/m
 - **`core/`** — simulação sem dependência de terminal: `Field` e `Rng` (`rain.rs`), temas e paleta de 16 níveis (`theme.rs`), mensagens escondidas (`message.rs`).
 - **`ui/`** — widgets ratatui: `RainWidget` escreve a chuva direto no `Buffer`; `shell.rs` (layout do console), `footer.rs` (status e dicas), `lock.rs` (trava de saída).
 - **`pages/`** — um arquivo por menu. Cada página implementa a trait `Page`; a maioria é uma `SettingsPage` com uma lista de `Item` (toggle, slider, escolha, botão). Para adicionar um menu, crie o arquivo e acrescente uma linha em `pages::registry()`.
+- **`commands/`** — `trait Command` e os comandos embutidos (`builtin.rs`); cada comando devolve uma `Action`.
+- **`sys.rs`** — `SysMonitor`: thread que lê o sistema com `sysinfo` e manda um `SysSnapshot` por segundo via `mpsc`; o loop só faz `try_recv`, sem travar o frame.
 - **`app.rs`** — `App` e os modos `Idle`, `Console` e `Lock`. Fluxo único: tecla → `Action` (`action.rs`) → `App::update` → `App::view`.
 - **`main.rs`** — loop a ~60 FPS: lê entrada sem bloquear, avança a simulação com o `dt` real e chama `Terminal::draw`.
 
