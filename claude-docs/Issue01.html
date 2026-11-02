@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue 01 · MATRIX//OS</title>
+<style>
+:root {
+  --bg: #f4f7f4; --panel: #ffffff; --ink: #142018; --muted: #56655b;
+  --line: #d3ddd5; --accent: #0a7a3a; --accent-soft: #e2f3e8;
+  --warn: #9a5b00; --warn-soft: #fbf0dc; --code-bg: #eef3ef;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #060a07; --panel: #0c130e; --ink: #cfe9d6; --muted: #7d9a86;
+    --line: #1d2b21; --accent: #3dff8a; --accent-soft: #0f2a18;
+    --warn: #ffc25c; --warn-soft: #2a2010; --code-bg: #08100a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #060a07; --panel: #0c130e; --ink: #cfe9d6; --muted: #7d9a86;
+  --line: #1d2b21; --accent: #3dff8a; --accent-soft: #0f2a18;
+  --warn: #ffc25c; --warn-soft: #2a2010; --code-bg: #08100a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 var(--sans); }
+main { max-width: 980px; margin: 0 auto; padding: 32px 16px 80px; }
+h1, h2, h3 { font-family: var(--mono); line-height: 1.25; letter-spacing: -.01em; }
+h1 { font-size: 1.9rem; margin: .2em 0 .3em; }
+h2 { font-size: 1.25rem; margin: 2.4em 0 .6em; padding-top: .8em; border-top: 1px solid var(--line); }
+h2 .n { color: var(--accent); margin-right: .4em; }
+h3 { font-size: 1rem; margin: 1.6em 0 .4em; }
+p, li { max-width: 72ch; }
+a { color: var(--accent); }
+.tag { font: 600 .75rem var(--mono); color: var(--accent); text-transform: uppercase; letter-spacing: .12em; }
+.lede { color: var(--muted); font-size: 1.05rem; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
+.chip { font: .78rem var(--mono); border: 1px solid var(--line); background: var(--panel); padding: 2px 10px; border-radius: 999px; color: var(--muted); }
+code { font: .88em var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { font: .82rem/1.5 var(--mono); background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.rec { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.rec .tag::after { content: " · recomendado"; }
+.note { border-left: 3px solid var(--warn); background: var(--warn-soft); padding: 10px 14px; border-radius: 0 8px 8px 0; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 .78rem var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+td code { white-space: nowrap; }
+kbd { font: .8em var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--panel); }
+
+/* Mockup do console */
+.screen { background: #020503; color: #3dff8a; border-radius: 10px; border: 1px solid #1d2b21; padding: 10px; overflow-x: auto; box-shadow: 0 0 40px rgba(61,255,138,.08) inset; }
+.screen pre { background: none; border: 0; margin: 0; padding: 0; color: inherit; font-size: .74rem; line-height: 1.35; white-space: pre; }
+.screen .d { color: #1f7a45; } .screen .b { color: #b9ffd6; font-weight: 700; }
+.screen .sel { background: #3dff8a; color: #020503; } .screen .w { color: #ffc25c; }
+
+.phases { counter-reset: ph; list-style: none; padding: 0; }
+.phases > li { counter-increment: ph; position: relative; padding: 14px 16px 14px 56px; margin: 10px 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; max-width: none; }
+.phases > li::before { content: counter(ph, decimal-leading-zero); position: absolute; left: 16px; top: 13px; font: 700 1rem var(--mono); color: var(--accent); }
+.phases h3 { margin: 0 0 .3em; }
+.phases ul { margin: .3em 0 0; padding-left: 1.1em; }
+.done { color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+
+<span class="tag">Issue 01 · branch mark-01</span>
+<h1>MATRIX//OS: console cibernético sobre a chuva digital</h1>
+<p class="lede">Proposta para migrar o <code>matrix-rain</code> para o <strong>ratatui</strong>, adicionar um console no estilo terminal antigo (menu lateral, área de trabalho e rodapé de status) e gerar um executável que roda numa janela própria, fora do terminal. A chuva continua sendo o “descanso de tela” sempre que não houver atividade.</p>
+<div class="meta">
+  <span class="chip">ratatui 0.30</span><span class="chip">crossterm 0.28</span><span class="chip">sysinfo 0.39</span><span class="chip">Rust 1.99 · edition 2021</span><span class="chip">02/11/2026</span>
+</div>
+
+<h2><span class="n">01</span>Resumo</h2>
+<ul>
+  <li><strong>Um núcleo e duas “carcaças”.</strong> A simulação (chuva, temas, mensagens) e a interface viram código independente do backend. O mesmo binário roda no terminal (<code>crossterm</code>) ou numa janela nativa com GPU (feature <code>desktop</code>).</li>
+  <li><strong>Dois modos.</strong> No <em>Idle</em>, só a chuva aparece, como hoje. No <em>Console</em>, a interface aparece sobre a chuva, que continua animando atenuada ao fundo. Depois de 60 s sem atividade (configurável), o console se recolhe sozinho.</li>
+  <li><strong>Menus como dados.</strong> Cada menu é uma estrutura separada que implementa a trait <code>Page</code>. As páginas de configuração são só listas de itens tipados (toggle, slider, escolha, botão), como nos menus de opções de jogos. Para adicionar um comando basta um arquivo e uma linha de registro.</li>
+  <li><strong>Uma única fonte de ações.</strong> Menu, atalho de teclado e linha de comando (<code>&gt; theme dracula</code>) geram o mesmo <code>Action</code>. Não existem dois caminhos para fazer a mesma coisa.</li>
+</ul>
+
+<h2><span class="n">02</span>Executável fora do terminal</h2>
+<p>O princípio atual se mantém: um binário pequeno e rápido, sem runtime pesado. O ratatui desenha num <code>Buffer</code> de células e não sabe onde esse buffer vai parar. Isso permite trocar só o <em>backend</em> sem reescrever nenhum widget.</p>
+<div class="grid">
+  <div class="card">
+    <span class="tag">Opção A · lançador</span>
+    <h3>Pacote .app/.exe que abre um terminal dedicado</h3>
+    <p>Script empacotado que abre o WezTerm ou o Alacritty em tela cheia, com fonte e cores próprias, rodando o binário.</p>
+    <p class="done">+ Nenhum código novo. − Depende de um terminal instalado. Não é um executável de verdade.</p>
+  </div>
+  <div class="card rec">
+    <span class="tag">Opção B · janela nativa</span>
+    <h3>Backend ratatui em GPU (winit + wgpu)</h3>
+    <p>Uma feature <code>desktop</code> troca o <code>CrosstermBackend</code> por um backend que renderiza as células numa janela. Os candidatos são <code>ratatui-wgpu</code> ou <code>egui_ratatui</code>, a decidir num spike na Fase 5. Os widgets são exatamente os mesmos.</p>
+    <p class="done">+ Binário único, fonte embutida, efeitos de CRT (scanlines, brilho) via shader. − Mais dependências e é preciso empacotar a fonte.</p>
+  </div>
+  <div class="card">
+    <span class="tag">Opção C · navegador</span>
+    <h3>WASM com Ratzilla</h3>
+    <p>O mesmo núcleo compilado para <code>wasm32</code>, renderizando no DOM ou num canvas. Bom para demonstração e divulgação.</p>
+    <p class="done">+ Roda em qualquer lugar e não precisa de instalação. − Sem acesso ao status real da máquina, então o rodapé fica limitado.</p>
+  </div>
+</div>
+<p><strong>Recomendação:</strong> B, mantendo o terminal como alvo padrão. Os detalhes de distribuição ficam na Fase 6:</p>
+<ul>
+  <li>Empacotamento com <code>cargo-bundle</code> (.app no macOS, .msi no Windows, .deb no Linux).</li>
+  <li><code>#![windows_subsystem = "windows"]</code>, para não abrir uma janela de console no Windows.</li>
+  <li>Assinatura e notarização no macOS.</li>
+</ul>
+<div class="note">As versões e APIs exatas dos backends de GPU não foram verificadas localmente: só <code>ratatui</code>, <code>wgpu</code>, <code>winit</code> e <code>egui</code> estão no cache do cargo. O spike da Fase 5 confirma isso antes de qualquer compromisso. Atenção também à fonte: ela precisa de katakana <em>half-width</em> com largura de 1 célula, senão a grade da chuva desalinha.</div>
+
+<h2><span class="n">03</span>Layout do console</h2>
+<p>A estrutura segue a de um menu de configurações de jogo: categorias à esquerda, conteúdo da categoria no centro, dicas e status embaixo. A chuva aparece no fundo atenuada (cerca de 35% do brilho) e volta ao brilho total no modo Idle.</p>
+<div class="screen" role="img" aria-label="Mockup do console: barra superior, menu lateral com categorias, área central com opções de vídeo e rodapé com status do sistema">
+<pre><span class="d">ｱ ﾐ  ﾈ</span>╭─ <span class="b">MATRIX//OS</span> v0.2 ─────────────────────── SESSÃO 0x1F · NÓ saulo-mbp ─╮<span class="d">ﾂ ｶ</span>
+<span class="d">ﾘ   ｸ</span>│ <span class="d">CONFIG › VÍDEO</span>                                         <span class="w">● alterações</span> │<span class="d">  ﾓ</span>
+<span class="d">ｦ ﾃ  </span>├─────────────────┬─────────────────────────────────────────────────┤<span class="d">ﾉ  </span>
+<span class="d"> ﾕ  ｴ</span>│  <span class="sel"> ▸ VÍDEO       </span> │  TEMA          ◂ <span class="b">DRACULA</span> ▸        ▇▇▇▇▇▇▇▇▇▇ │<span class="d">ｺ ﾊ</span>
+<span class="d">ﾑ  ﾁ </span>│    CHUVA        │  VELOCIDADE    ━━━━━━━●━━━━━━━  1.25x          │<span class="d"> ﾏ </span>
+<span class="d">  ｻ  </span>│    MENSAGENS    │  FPS ALVO      ◂ 60 ▸                          │<span class="d">ﾍ  </span>
+<span class="d">ﾋ ﾀ  </span>│    SISTEMA      │  TELA CHEIA    [■] ligado                      │<span class="d"> ﾖ ｷ</span>
+<span class="d"> ﾜ ｹ </span>│    ATALHOS      │  HUD           [ ] desligado                   │<span class="d">ﾛ  </span>
+<span class="d">ﾐ   ｵ</span>│    ACESSIB.     │  REDUZIR MOVIM.[ ] desligado                   │<span class="d">  ﾃ</span>
+<span class="d">  ﾎ  </span>│    LOG          │                                                 │<span class="d">ｽ  </span>
+<span class="d">ﾗ  ﾈ </span>│  ───────────    │  <span class="d">Paleta aplicada em tempo real na chuva.</span>       │<span class="d"> ｱ </span>
+<span class="d"> ｾ   </span>│    SAIR         │  [ APLICAR ]  [ DESCARTAR ]  [ PADRÕES ]        │<span class="d">ﾁ ﾕ</span>
+<span class="d">ﾂ  ﾒ </span>│                 │ <span class="b">&gt;</span> theme dra<span class="d">cula</span>█             <span class="d">Tab completa</span> │<span class="d">  ﾑ</span>
+<span class="d">ﾅ ﾙ  </span>├─────────────────┴─────────────────────────────────────────────────┤<span class="d">ﾐ  </span>
+<span class="d">  ｶ  </span>│ CPU ▂▃▅▇▅ 23%  MEM 9.1/16G  LOAD 1.42  UP 3d04h  60fps  ⏻ 87%  14:32 │<span class="d"> ﾄ </span>
+<span class="d">ﾓ ｷ  </span>╰ <span class="b">↑↓</span> navegar  <span class="b">←→</span> ajustar  <span class="b">Enter</span> ok  <span class="b">Esc</span> voltar  <span class="b">:</span> comando  <span class="b">F1</span> ajuda ╯<span class="d">ﾍ  </span></pre>
+</div>
+<h3>Regiões</h3>
+<div class="table-wrap"><table>
+<tr><th>Região</th><th>Conteúdo</th><th>Comportamento</th></tr>
+<tr><td>Barra superior</td><td>Nome/versão, sessão, hostname, <em>breadcrumb</em>, indicador de alterações não salvas</td><td>Fixa. O breadcrumb mostra onde você está, como em <code>CONFIG › VÍDEO</code>.</td></tr>
+<tr><td>Menu lateral</td><td>Categorias registradas (<code>Page</code>), com ícone e atalho</td><td>Abaixo de 100 colunas encolhe para só ícones. Abaixo de 60 vira uma lista por cima do conteúdo.</td></tr>
+<tr><td>Área de trabalho</td><td>Página ativa: itens de configuração, monitor, log, editor de mensagens</td><td>Pré-visualização ao vivo na chuva do fundo. Botões Aplicar, Descartar e Padrões.</td></tr>
+<tr><td>Linha de comando</td><td><code>&gt;</code> prompt com histórico (<kbd>↑</kbd><kbd>↓</kbd>) e autocompletar (<kbd>Tab</kbd>)</td><td>Abre com <kbd>:</kbd>. Executa comandos registrados, com erro inline e sugestão (“quis dizer <code>theme</code>?”).</td></tr>
+<tr><td>Rodapé</td><td>CPU (sparkline), memória, load, uptime, FPS, bateria, relógio + dicas de teclas da tela atual</td><td>Atualiza a 1 Hz numa thread separada, sem travar o frame. As dicas mudam conforme o foco.</td></tr>
+</table></div>
+
+<h2><span class="n">04</span>Arquitetura</h2>
+<p>O fluxo é unidirecional, no estilo Elm/TEA, que é o padrão recomendado pela documentação do ratatui. Eventos viram <code>Action</code>, só o <code>update</code> altera o estado e o <code>view</code> é uma função pura do estado.</p>
+<pre><code>Evento (tecla/mouse/resize/tick)
+   │
+   ▼
+Mode::handle(evento) ──► Option&lt;Action&gt;      ◄── Command::run(args)  (linha de comando)
+   │                                          ◄── Item::activate()    (menu)
+   ▼
+App::update(Action)  ── único lugar que muda o estado
+   │
+   ▼
+App::view(frame)     ── RainWidget + Shell(Sidebar, Page, Prompt, Footer)</code></pre>
+
+<h3>Estrutura de módulos</h3>
+<pre><code>src/
+├── main.rs            entrada: escolhe o backend (terminal | desktop) e roda o loop
+├── app.rs             App, Mode (Idle | Console | Lock), update(Action)
+├── action.rs          enum Action — vocabulário único de intenções
+├── core/              sem ratatui, testável isolado
+│   ├── rain.rs        Field, Drop, Rng          (vem do main.rs atual)
+│   ├── theme.rs       Theme, THEMES, paleta     (idem)
+│   └── message.rs     Message, glyph, build_mask
+├── ui/
+│   ├── rain.rs        RainWidget: impl Widget, escreve a chuva no Buffer
+│   ├── shell.rs       layout: header, sidebar, workspace, footer
+│   ├── footer.rs      StatusBar + KeyHints
+│   ├── lock.rs        trava de saída (já existente, portada)
+│   └── style.rs       tokens de estilo derivados do tema (accent, dim, sel)
+├── pages/             ← um arquivo por menu; ponto de extensão principal
+│   ├── mod.rs         trait Page, Item, registry()
+│   ├── video.rs       tema, velocidade, FPS, tela cheia, HUD
+│   ├── rain.rs        densidade, tamanho do rastro, charset
+│   ├── messages.rs    lista, intervalo, “mostrar agora”, editor
+│   ├── system.rs      monitor detalhado (CPU por núcleo, processos top-5)
+│   ├── keys.rs        mapa de atalhos (somente leitura na v1)
+│   ├── a11y.rs        reduzir movimento, alto contraste
+│   └── log.rs         histórico de comandos e eventos
+├── commands/          ← comandos da linha de comando
+│   ├── mod.rs         trait Command, registry(), parse + autocomplete
+│   └── builtin.rs     theme, speed, msg, clear, help, exit, …
+├── sys.rs             SysMonitor: thread + mpsc com SysSnapshot a 1 Hz
+└── config.rs          Settings (serde) ⇄ ~/.config/matrix-rain/config.toml</code></pre>
+
+<h3>Contratos de extensão</h3>
+<pre><code>/// Uma intenção. Menus, atalhos e comandos produzem isto — nunca mutam o App direto.
+pub enum Action {
+    SetTheme(usize), SetSpeed(f32), ToggleFullscreen, ShowMessage, RestartRain,
+    Navigate(PageId), Back, OpenPrompt, RunCommand(String),
+    Apply, Discard, ResetDefaults, Notify(Toast), RequestExit,
+}
+
+/// Um menu da barra lateral.
+pub trait Page {
+    fn id(&amp;self) -&gt; PageId;
+    fn title(&amp;self) -&gt; &amp;str;
+    fn icon(&amp;self) -&gt; char { '▸' }
+    fn render(&amp;mut self, area: Rect, buf: &amp;mut Buffer, ctx: &amp;Ctx);
+    fn on_key(&amp;mut self, key: KeyEvent, ctx: &amp;Ctx) -&gt; Option&lt;Action&gt;;
+    /// Dicas de tecla mostradas no rodapé quando esta página tem foco.
+    fn hints(&amp;self) -&gt; &amp;[(&amp;str, &amp;str)] { DEFAULT_HINTS }
+}
+
+/// Item de configuração no estilo menu de jogo.
+pub enum Item {
+    Toggle { label: &amp;'static str, get: fn(&amp;Settings) -&gt; bool, set: fn(&amp;mut Settings, bool) },
+    Slider { label: &amp;'static str, range: RangeInclusive&lt;f32&gt;, step: f32, get: …, set: … },
+    Choice { label: &amp;'static str, options: fn(&amp;Ctx) -&gt; Vec&lt;String&gt;, get: …, set: … },
+    Button { label: &amp;'static str, action: fn() -&gt; Action, confirm: bool },
+}
+
+/// SettingsPage genérica: a maioria dos menus é só uma lista de Items.
+pub struct SettingsPage { id: PageId, title: &amp;'static str, items: Vec&lt;Item&gt;, cursor: usize }
+
+/// Comando de texto da linha de comando.
+pub trait Command {
+    fn name(&amp;self) -&gt; &amp;'static str;
+    fn aliases(&amp;self) -&gt; &amp;[&amp;'static str] { &amp;[] }
+    fn help(&amp;self) -&gt; &amp;'static str;
+    fn complete(&amp;self, _arg: &amp;str, _ctx: &amp;Ctx) -&gt; Vec&lt;String&gt; { vec![] }
+    fn run(&amp;self, args: &amp;[&amp;str], ctx: &amp;Ctx) -&gt; Result&lt;Action, String&gt;;
+}</code></pre>
+
+<h3>Exemplo: adicionar um menu novo</h3>
+<pre><code>// pages/audio.rs  — arquivo novo
+pub fn page() -&gt; SettingsPage {
+    SettingsPage::new(PageId::Audio, "ÁUDIO", vec![
+        Item::toggle("BIPES", |s| s.beeps, |s, v| s.beeps = v),
+        Item::slider("VOLUME", 0.0..=1.0, 0.1, |s| s.volume, |s, v| s.volume = v),
+    ])
+}
+
+// pages/mod.rs — uma linha
+pub fn registry() -&gt; Vec&lt;Box&lt;dyn Page&gt;&gt; {
+    vec![ Box::new(video::page()), Box::new(rain::page()), /* … */ Box::new(audio::page()) ]
+}</code></pre>
+
+<h3>Padrões de projeto usados e onde</h3>
+<div class="table-wrap"><table>
+<tr><th>Padrão</th><th>Onde</th><th>Por quê</th></tr>
+<tr><td>Fluxo unidirecional (TEA)</td><td><code>Action</code> → <code>update</code> → <code>view</code></td><td>Estado previsível, fácil de testar sem terminal.</td></tr>
+<tr><td>Command</td><td><code>Action</code>, trait <code>Command</code></td><td>Menu, atalho e prompt compartilham a mesma lógica. Também serve de base para desfazer e para o log.</td></tr>
+<tr><td>State</td><td><code>Mode::{Idle, Console, Lock}</code></td><td>Cada modo trata as próprias teclas. Acaba a cascata de <code>if</code> no <code>handle_key</code>.</td></tr>
+<tr><td>Registry</td><td><code>pages::registry()</code>, <code>commands::registry()</code></td><td>Extensão sem mexer no núcleo.</td></tr>
+<tr><td>Strategy</td><td><code>Terminal&lt;B: Backend&gt;</code></td><td>Troca terminal ↔ janela GPU em tempo de compilação.</td></tr>
+<tr><td>Composite</td><td>Widgets do ratatui</td><td>O shell compõe sidebar, página e rodapé, e cada parte se desenha sozinha.</td></tr>
+<tr><td>Snapshot / Memento</td><td><code>Settings</code> editado vs. aplicado</td><td>Fluxo de jogo Aplicar/Descartar/Padrões com pré-visualização.</td></tr>
+</table></div>
+<p class="done">Fica de fora de propósito: ECS, plugins via <code>dylib</code>, injeção de dependência, async/tokio. Nenhum deles resolve um problema que este app tem hoje. Plugins carregáveis só entram se houver pedido real por comandos de terceiros.</p>
+
+<h2><span class="n">05</span>Modos e ciclo de inatividade</h2>
+<div class="table-wrap"><table>
+<tr><th>Modo</th><th>Entra quando</th><th>Mostra</th><th>Teclas</th></tr>
+<tr><td><strong>Idle</strong></td><td>Início · timeout sem input · <kbd>Esc</kbd> no nível raiz</td><td>Só a chuva, brilho total, mensagens escondidas ativas</td><td>Atalhos atuais continuam (<kbd>t</kbd>, <kbd>+</kbd>, <kbd>p</kbd>…). <kbd>Enter</kbd>, <kbd>F1</kbd> ou <kbd>:</kbd> abrem o console.</td></tr>
+<tr><td><strong>Console</strong></td><td><kbd>Enter</kbd>, <kbd>F1</kbd> ou <kbd>:</kbd> no Idle, ou clique</td><td>Shell sobre a chuva atenuada (que continua animando)</td><td>Navegação de menu, prompt, mouse</td></tr>
+<tr><td><strong>Lock</strong></td><td><kbd>q</kbd> / <kbd>Ctrl+C</kbd> / item SAIR</td><td>Caixa da trava (a atual)</td><td>Texto + <kbd>Enter</kbd>, <kbd>Esc</kbd> cancela</td></tr>
+</table></div>
+<ul>
+  <li><strong>Transições curtas.</strong> Abrir o console leva cerca de 250 ms: as linhas “digitam” de cima para baixo, com scanline. Fechar faz a mesma coisa ao contrário. Com <em>reduzir movimento</em> ligado, a transição é instantânea.</li>
+  <li><strong>Timeout.</strong> O padrão é 60 s, configurável em SISTEMA e desativável. Ele não dispara com o prompt em edição nem com alterações não salvas, para não perder o que foi digitado.</li>
+  <li><strong>Mensagens escondidas.</strong> Só aparecem no Idle, porque no Console a área central está ocupada.</li>
+</ul>
+
+<h2><span class="n">06</span>UX</h2>
+<div class="grid">
+  <div class="card"><h3>Teclado primeiro, sem prender</h3><p>Mapa de teclas consistente em todas as telas: <kbd>↑↓</kbd> move, <kbd>←→</kbd> ajusta, <kbd>Enter</kbd> confirma, <kbd>Esc</kbd> volta um nível. O mouse funciona também: clique, roda e arrastar slider.</p></div>
+  <div class="card"><h3>Descobrível</h3><p>O rodapé sempre mostra as teclas válidas naquela tela. <kbd>F1</kbd> abre a ajuda contextual. O prompt autocompleta e sugere em caso de erro de digitação.</p></div>
+  <div class="card"><h3>Pré-visualização ao vivo</h3><p>Trocar o tema ou a velocidade muda a chuva do fundo na hora. Aplicar grava, Descartar volta ao estado anterior e Padrões pede confirmação.</p></div>
+  <div class="card"><h3>Feedback claro</h3><p>Toast curto para cada ação (“TEMA ▸ DRACULA”). Erro inline no prompt. Ponto de alterações não salvas no header.</p></div>
+  <div class="card"><h3>Não depende só da cor</h3><p>Seleção com marcador <code>▸</code> + inversão. Toggles com <code>[■]</code>/<code>[ ]</code> e texto. Contraste de texto ≥ 4.5:1 em todos os temas, com um tema de alto contraste.</p></div>
+  <div class="card"><h3>Responsivo</h3><p>Funciona a partir de 60×20. A sidebar encolhe para ícones e o rodapé esconde métricas em ordem de prioridade (o relógio e as dicas ficam por último). Abaixo do mínimo aparece um aviso centralizado.</p></div>
+  <div class="card"><h3>Movimento com propósito</h3><p>A animação indica mudança de estado, não enfeita. A opção de reduzir movimento desliga o embaralhamento de letras e as transições.</p></div>
+  <div class="card"><h3>Persistente</h3><p>As configurações sobrevivem a reinícios (<code>config.toml</code>). Se o arquivo estiver corrompido, o app usa os padrões e avisa, sem quebrar.</p></div>
+</div>
+
+<h3>Visual moderno com cara de terminal antigo</h3>
+<ul>
+  <li>Bordas arredondadas (<code>BorderType::Rounded</code>), títulos embutidos na borda e uma única cor de destaque derivada do <code>accent</code> do tema ativo. O console inteiro acompanha o tema.</li>
+  <li>Três níveis de texto (brilhante, normal, atenuado) tirados da paleta de 16 níveis que já existe. Nada de cor nova.</li>
+  <li>Detalhes cibernéticos discretos: sessão em hexadecimal, cursor em bloco piscando, sparklines e o efeito de decodificação já usado na trava, reaproveitado nos títulos ao abrir as páginas.</li>
+  <li>No desktop, há um shader opcional de CRT (curvatura leve, scanlines, bloom na cabeça das gotas), desligado com <em>reduzir movimento</em>.</li>
+</ul>
+
+<h2><span class="n">07</span>Rodapé de status</h2>
+<div class="table-wrap"><table>
+<tr><th>Métrica</th><th>Fonte</th><th>Prioridade<br>(some primeiro ↓)</th></tr>
+<tr><td>Dicas de tecla</td><td><code>Page::hints()</code></td><td>1 — sempre</td></tr>
+<tr><td>Relógio</td><td>stdlib (UTC) ou crate <code>time</code> para hora local</td><td>2</td></tr>
+<tr><td>CPU % + sparkline 30 s</td><td><code>sysinfo</code></td><td>3</td></tr>
+<tr><td>Memória usada/total</td><td><code>sysinfo</code></td><td>4</td></tr>
+<tr><td>FPS real</td><td>já medido no loop</td><td>5</td></tr>
+<tr><td>Uptime, load average</td><td><code>sysinfo</code></td><td>6</td></tr>
+<tr><td>Tema · velocidade</td><td>estado do App (substitui o HUD atual)</td><td>7</td></tr>
+<tr><td>Bateria</td><td>crate <code>starship-battery</code>, opcional</td><td>8 — só se houver demanda</td></tr>
+</table></div>
+<p><code>SysMonitor</code> roda numa thread própria: <code>refresh</code> a cada 1 s e envio de um <code>SysSnapshot</code> por <code>mpsc</code>. O loop de render só lê o último snapshot, então uma leitura lenta do sistema nunca derruba o FPS.</p>
+
+<h2><span class="n">08</span>Plano de entrega</h2>
+<p>Cada fase termina com <code>make test</code> e <code>make lint</code> verdes e com o app utilizável. Nenhuma fase deixa a branch quebrada.</p>
+<ol class="phases">
+  <li><h3>Separar o núcleo</h3>
+    <p>Quebrar o <code>main.rs</code> (1125 linhas) em <code>core/</code> sem mudar comportamento. Os 2 testes atuais continuam passando.</p>
+    <p class="done">Aceite: diff só de movimentação de código, chuva idêntica.</p></li>
+  <li><h3>Chuva em ratatui</h3>
+    <p><code>RainWidget</code> escreve no <code>Buffer</code>. O loop passa a usar <code>Terminal::draw</code> e a trava e o HUD são portados para widgets.</p>
+    <p class="done">Aceite: ≥ 60 FPS num terminal 240×70 com release, medido antes e depois. Se piorar mais de 15%, o rastro passa a ser desenhado só nas células que mudaram.</p></li>
+  <li><h3>Shell e modos</h3>
+    <p><code>Mode</code>, <code>Action</code>, layout (header, sidebar, workspace, rodapé com dicas), transição de abertura e fechamento e timeout de inatividade.</p>
+    <p class="done">Aceite: testes com <code>TestBackend</code> do layout em 60×20, 80×24 e 160×48. Teste do ciclo Idle → Console → timeout → Idle.</p></li>
+  <li><h3>Menus e configuração</h3>
+    <p>Trait <code>Page</code>, <code>SettingsPage</code>, as páginas VÍDEO, CHUVA, MENSAGENS e ACESSIB., o fluxo Aplicar/Descartar/Padrões e a persistência em TOML (<code>serde</code> + <code>toml</code> + <code>directories</code>).</p>
+    <p class="done">Aceite: alterar → reiniciar → valor mantido. Config inválida → padrões + toast.</p></li>
+  <li><h3>Prompt e status</h3>
+    <p>Trait <code>Command</code>, os comandos builtin, histórico, autocompletar e sugestão. <code>SysMonitor</code> e as páginas SISTEMA e LOG.</p>
+    <p class="done">Aceite: todos os itens de menu têm um comando equivalente, verificado por teste. O rodapé não altera o tempo de frame.</p></li>
+  <li><h3>Janela desktop (spike + implementação)</h3>
+    <p>Comparar <code>ratatui-wgpu</code> e <code>egui_ratatui</code>, escolher um e criar a feature <code>desktop</code> com a fonte embutida, mais o shader de CRT opcional.</p>
+    <p class="done">Aceite: <code>cargo run --features desktop</code> abre a janela com o mesmo console. O katakana alinha na grade.</p></li>
+  <li><h3>Empacotamento</h3>
+    <p><code>make bundle</code> com <code>cargo-bundle</code>, ícone e build de release no CI para macOS, Windows e Linux.</p>
+    <p class="done">Aceite: .app abre com duplo clique, sem terminal.</p></li>
+</ol>
+
+<h2><span class="n">09</span>Dependências novas</h2>
+<div class="table-wrap"><table>
+<tr><th>Crate</th><th>Para quê</th><th>Fase</th></tr>
+<tr><td><code>ratatui</code> 0.30</td><td>Widgets, layout, buffer diff (já usa crossterm por baixo)</td><td>2</td></tr>
+<tr><td><code>sysinfo</code> 0.39</td><td>CPU, memória, uptime, load</td><td>5</td></tr>
+<tr><td><code>serde</code> + <code>toml</code> + <code>directories</code></td><td>Persistência das configurações no diretório certo de cada SO</td><td>4</td></tr>
+<tr><td><code>time</code> (opcional)</td><td>Hora local no relógio. A stdlib só dá UTC.</td><td>5</td></tr>
+<tr><td>backend GPU (a definir)</td><td>Janela nativa, só com a feature <code>desktop</code></td><td>6</td></tr>
+</table></div>
+<p class="done">O build padrão (terminal) continua leve: as dependências de GPU ficam atrás de feature e não entram no <code>cargo build</code> normal.</p>
+
+<h2><span class="n">10</span>Riscos e decisões em aberto</h2>
+<ul>
+  <li><strong>Desempenho do diff do ratatui com a tela inteira mudando.</strong> O renderer atual é muito otimizado (runs, um único <code>write</code>). Mitigação: medir na Fase 2 e manter o <code>RainWidget</code> simples. O ratatui já agrupa os escapes.</li>
+  <li><strong>Fonte no desktop.</strong> Uma fonte monoespaçada com katakana half-width e licença livre que permita embutir. Precisa ser escolhida no spike.</li>
+  <li><strong>Tecla para abrir o console.</strong> A proposta é <kbd>Enter</kbd>/<kbd>F1</kbd>/<kbd>:</kbd>. Os atalhos de uma letra atuais continuam funcionando no Idle, para não quebrar quem já usa.</li>
+  <li><strong>Sair pelo console.</strong> O item SAIR abre a mesma trava com código. Fica em aberto se o código deve ser configurável (proposta: sim, em SISTEMA).</li>
+</ul>
+
+</main>
+</body>
+</html>
