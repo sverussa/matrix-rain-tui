@@ -1,62 +1,71 @@
 //! matrix-rain — chuva digital estilo Matrix no terminal.
 //!
-//! Arquitetura de performance:
-//!   • Um único buffer de bytes por frame → 1 `write` + 1 `flush` (sem 12k syscalls).
-//!   • Cores quantizadas (16 níveis) + agrupamento em "runs" → poucos escapes ANSI.
-//!   • Paleta e curva de decaimento pré-calculadas (lookup table, zero `powf` no hot path).
-//!   • RNG xorshift64* próprio (sem dependência, sem alocação).
-//!   • `dt` real (tempo entre frames) → velocidade independente do FPS.
+//! O núcleo (`core/`) não conhece o terminal; a UI (`ui/`) desenha num `Buffer`
+//! do ratatui, que só envia ao terminal as células que mudaram.
 
 mod action;
 mod app;
 mod core;
+mod ui;
 
 use std::io;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crossterm::{
-    cursor::{Hide, Show},
-    execute,
-    style::ResetColor,
-    terminal::{
-        self, Clear, ClearType, DisableLineWrap, EnableLineWrap, EnterAlternateScreen,
-        LeaveAlternateScreen,
-    },
-};
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::DefaultTerminal;
 
 use crate::app::App;
 use crate::core::rain::Rng;
 
-fn install_panic_hook() {
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        // Nunca deixar o terminal em raw mode / alternate screen após um panic.
-        let _ = terminal::disable_raw_mode();
-        let _ = execute!(io::stdout(), ResetColor, Show, EnableLineWrap, LeaveAlternateScreen);
-        default_hook(info);
-    }));
+const TARGET_FPS: u64 = 60;
+
+fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
+    let size = terminal.size()?;
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E37_79B9_7F4A_7C15);
+    let mut app = App::new(size.width, size.height, Rng::new(seed));
+    let frame_budget = Duration::from_micros(1_000_000 / TARGET_FPS);
+    let mut last = Instant::now();
+
+    loop {
+        let frame_start = Instant::now();
+
+        // 1) Entrada (não bloqueante).
+        while event::poll(Duration::ZERO)? {
+            match event::read()? {
+                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    if app.on_key(key, Instant::now()) {
+                        return Ok(());
+                    }
+                }
+                Event::Resize(w, h) => app.relayout(w, h),
+                _ => {}
+            }
+        }
+
+        // 2) Simulação com o tempo real decorrido (clamp evita saltos após pausa).
+        let now = Instant::now();
+        let dt = (now - last).as_secs_f32().min(0.06);
+        last = now;
+        app.tick(dt, now);
+
+        // 3) Render: o ratatui só envia as células que mudaram.
+        terminal.draw(|f| app.view(f))?;
+
+        // 4) Controle de frame.
+        if let Some(rest) = frame_budget.checked_sub(frame_start.elapsed()) {
+            thread::sleep(rest);
+        }
+    }
 }
 
 fn main() -> io::Result<()> {
-    install_panic_hook();
-
-    let mut stdout = io::stdout();
-    terminal::enable_raw_mode()?;
-    // Sem quebra automática de linha: um caractere a mais nunca faz a tela rolar.
-    execute!(stdout, EnterAlternateScreen, DisableLineWrap, Hide, Clear(ClearType::All))?;
-
-    let result = (|| -> io::Result<()> {
-        let (w, h) = terminal::size()?;
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9E37_79B9_7F4A_7C15);
-        let app = App::new(w, h, Rng::new(seed));
-        app.run(&mut stdout)
-    })();
-
-    // Restauração garantida, mesmo em caso de erro.
-    execute!(stdout, ResetColor, Show, EnableLineWrap, LeaveAlternateScreen)?;
-    terminal::disable_raw_mode()?;
+    // `init` liga raw mode + tela alternativa e instala um panic hook que restaura o terminal.
+    let mut terminal = ratatui::init();
+    let result = run(&mut terminal);
+    ratatui::restore();
     result
 }

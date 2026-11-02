@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-crossterm = "0.28"
+# Usa o crossterm re-exportado (`ratatui::crossterm`, 0.29): uma só versão no build.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 
 # Otimizações de release: binário menor, loop mais rápido.
 [profile.release]
