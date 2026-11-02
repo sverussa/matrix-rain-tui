@@ -1,0 +1,15 @@
+[package]
+name = "matrix-rain"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm = "0.28"
+
+# Otimizações de release: binário menor, loop mais rápido.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
