@@ -1,6 +1,6 @@
 BIN := target/release/matrix-rain
 
-.PHONY: run dev build debug check test fmt lint clean install
+.PHONY: run dev build debug check test fmt lint clean install desktop bundle
 
 run: build ## Compila (release) e executa
 	./$(BIN)
@@ -23,11 +23,17 @@ test: ## Roda os testes
 fmt: ## Formata o código
 	cargo fmt
 
-lint: ## Roda o clippy
-	cargo clippy -- -D warnings
+lint: ## Roda o clippy (inclui a feature desktop)
+	cargo clippy --all-features -- -D warnings
 
 clean: ## Remove artefatos de build
 	cargo clean
 
 install: ## Instala o binário em ~/.cargo/bin
 	cargo install --path .
+
+desktop: ## Executa a versão desktop (janela nativa, GPU)
+	cargo run --release --features desktop -- --window
+
+bundle: ## Empacota a versão desktop (.app/.msi/.deb); requer `cargo install cargo-bundle`
+	cargo bundle --release --features desktop

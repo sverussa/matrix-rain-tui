@@ -20,9 +20,30 @@ cargo build --release
 ./target/release/matrix-rain
 ```
 
-Atalhos no `Makefile`: `make run`, `make dev`, `make build`, `make check`, `make test`, `make fmt`, `make lint`, `make clean`, `make install`.
+Atalhos no `Makefile`: `make run`, `make dev`, `make build`, `make check`, `make test`, `make fmt`, `make lint`, `make clean`, `make install`, `make desktop`, `make bundle`.
 
 O perfil `release` já vem otimizado (LTO, `codegen-units = 1`, `panic = "abort"`, binário sem símbolos).
+
+## Versão desktop
+
+Com a feature `desktop`, o mesmo app roda numa janela nativa desenhada por GPU ([ratatui-wgpu](https://crates.io/crates/ratatui-wgpu) + winit), sem precisar de terminal. O build padrão não muda: as dependências de GPU só entram com a feature.
+
+```sh
+cargo run --release --features desktop -- --window   # ou: make desktop
+```
+
+O binário com a feature abre a janela quando não está num terminal (duplo clique, `.app`) ou com `--window`; `--tty` força o modo terminal. Fechar a janela pelo botão do sistema sai direto (a trava com código vale para o teclado).
+
+Para empacotar (`.app` no macOS, `.msi` no Windows, `.deb` no Linux) com [cargo-bundle](https://github.com/burtonageo/cargo-bundle):
+
+```sh
+cargo install cargo-bundle
+make bundle   # cargo bundle --release --features desktop
+```
+
+No Windows, a versão desktop é compilada sem janela de console (`windows_subsystem = "windows"`).
+
+**Fontes** (embutidas no binário, subconjuntos gerados com `pyftsubset`, em `assets/fonts/`): [Cascadia Mono](https://github.com/microsoft/cascadia-code) para latim, setas, molduras e blocos, e [BIZ UDGothic](https://github.com/googlefonts/morisawa-biz-ud-gothic) para o katakana half-width (1 célula de largura). Ambas sob a SIL Open Font License 1.1 (`assets/fonts/*-OFL.txt`).
 
 ## Controles
 
@@ -97,6 +118,7 @@ Elas só aparecem no Idle. As mensagens ficam na lista `MESSAGES` em `src/core/m
 - **`sys.rs`** — `SysMonitor`: thread que lê o sistema com `sysinfo` e manda um `SysSnapshot` por segundo via `mpsc`; o loop só faz `try_recv`, sem travar o frame.
 - **`app.rs`** — `App` e os modos `Idle`, `Console` e `Lock`. Fluxo único: tecla → `Action` (`action.rs`) → `App::update` → `App::view`.
 - **`main.rs`** — loop a ~60 FPS: lê entrada sem bloquear, avança a simulação com o `dt` real e chama `Terminal::draw`.
+- **`desktop.rs`** (feature `desktop`) — o mesmo `App` numa janela winit: teclas viram `KeyEvent` do crossterm, tick a 60 Hz e `Terminal::draw` no backend wgpu.
 
 ### Performance
 
