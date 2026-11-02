@@ -6,6 +6,7 @@
 mod action;
 mod app;
 mod core;
+mod pages;
 mod ui;
 
 use std::io;

@@ -1,6 +1,6 @@
 # matrix-rain
 
-Chuva digital estilo *Matrix* no terminal, escrita em Rust com [crossterm](https://crates.io/crates/crossterm).
+Chuva digital estilo *Matrix* no terminal, escrita em Rust com [ratatui](https://ratatui.rs). Por cima da chuva há um console (MATRIX//OS) com menus de configuração.
 
 ## Requisitos
 
@@ -26,8 +26,12 @@ O perfil `release` já vem otimizado (LTO, `codegen-units = 1`, `panic = "abort"
 
 ## Controles
 
+A chuva sozinha é o modo **Idle**. Nele valem os atalhos de uma tecla:
+
 | Tecla | Ação |
 |-------|------|
+| `Enter` / `F1` | Abrir o console |
+| `:` | Abrir o console direto na linha de comando |
 | `q` / `Esc` / `Ctrl+C` | Abrir a trava de saída: digite `matrix` e `Enter` para sair (`Esc` cancela, código errado limpa o campo) |
 | `Espaço` / `p` | Pausar / continuar |
 | `+` / `=` / `↑` | Aumentar velocidade (até 8x) |
@@ -39,6 +43,8 @@ O perfil `release` já vem otimizado (LTO, `codegen-units = 1`, `panic = "abort"
 | `w` | Mostrar uma mensagem escondida agora |
 | `h` | Mostrar / esconder o HUD (tema, velocidade, FPS) |
 | `r` | Reiniciar a chuva |
+
+No **console** a chuva continua ao fundo, atenuada. `↑↓` escolhe a categoria na barra lateral, `Enter` entra na página, `↑↓` escolhe o item, `←→`/`Enter` ajusta (a chuva muda na hora) e `Esc` volta um nível até fechar o console. `:` foca a linha de comando. `Ctrl+C` ou a página **SAIR** abrem a trava. Depois de 60 s sem tecla o console se fecha sozinho (a menos que haja texto na linha de comando).
 
 ## Temas
 
@@ -57,21 +63,20 @@ O perfil `release` já vem otimizado (LTO, `codegen-units = 1`, `panic = "abort"
 
 De tempos em tempos (a cada 5 minutos, ou ao apertar `w`) uma mensagem em letras grandes é pintada pela própria chuva: cada rastro que passa por uma célula da letra deixa ali o seu caractere, que fica parado e brilhante. Com a mensagem completa, ela fica alguns segundos na tela e depois os rastros seguintes vão lavando as letras até a chuva voltar ao normal. Só uma mensagem aparece por vez.
 
-As mensagens ficam na lista `MESSAGES` em `src/main.rs`: `VERUSSA`, `SUDO RM -RF /`, `WHOAMI`, `CHMOD 777`, `KILL -9` e `LS -LA`. Para adicionar uma nova, use só letras que existem na fonte (função `glyph`) ou desenhe as que faltarem.
+Elas só aparecem no Idle. As mensagens ficam na lista `MESSAGES` em `src/core/message.rs`: `VERUSSA`, `SUDO RM -RF /`, `WHOAMI`, `CHMOD 777`, `KILL -9` e `LS -LA`. Para adicionar uma nova, use só letras que existem na fonte (função `glyph`) ou desenhe as que faltarem.
 
 ## Como funciona
 
-Tudo está em `src/main.rs`:
-
-- **`Field`** — grade de caracteres e uma "gota" por coluna (posição da cabeça, velocidade e comprimento do rastro). Caracteres trocam aleatoriamente ao longo do rastro.
-- **`Renderer`** — paleta de 16 níveis de brilho e tabela de decaimento pré-calculadas a partir do gradiente do tema.
-- **`App`** — loop principal a ~60 FPS: lê entrada sem bloquear, avança a simulação com o `dt` real (velocidade independente do FPS) e desenha o frame.
+- **`core/`** — simulação sem dependência de terminal: `Field` e `Rng` (`rain.rs`), temas e paleta de 16 níveis (`theme.rs`), mensagens escondidas (`message.rs`).
+- **`ui/`** — widgets ratatui: `RainWidget` escreve a chuva direto no `Buffer`; `shell.rs` (layout do console), `footer.rs` (status e dicas), `lock.rs` (trava de saída).
+- **`pages/`** — um arquivo por menu. Cada página implementa a trait `Page`; a maioria é uma `SettingsPage` com uma lista de `Item` (toggle, slider, escolha, botão). Para adicionar um menu, crie o arquivo e acrescente uma linha em `pages::registry()`.
+- **`app.rs`** — `App` e os modos `Idle`, `Console` e `Lock`. Fluxo único: tecla → `Action` (`action.rs`) → `App::update` → `App::view`.
+- **`main.rs`** — loop a ~60 FPS: lê entrada sem bloquear, avança a simulação com o `dt` real e chama `Terminal::draw`.
 
 ### Performance
 
-- Cada frame é montado em um único buffer e enviado com 1 `write` + 1 `flush`.
-- Células vizinhas com o mesmo brilho são agrupadas em *runs*, reduzindo os escapes ANSI.
-- Sem `powf` no caminho quente: o decaimento usa uma tabela de lookup.
-- RNG próprio (xorshift64*), sem dependências extras.
+- O ratatui compara o frame com o anterior e só envia as células que mudaram.
+- O `RainWidget` não aloca por célula; paleta e curva de decaimento são tabelas pré-calculadas (sem `powf` no caminho quente).
+- Render em 240×70 (release): ~0,35 ms por frame no Idle e ~0,40 ms com o console (`cargo test --release -- --ignored --nocapture render_240x70`).
 
 O terminal é sempre restaurado ao sair, inclusive em caso de erro ou panic.

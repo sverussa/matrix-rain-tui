@@ -1,6 +1,8 @@
-//! Estado do app, atalhos → `Action`, `update` e `view`.
+//! Estado do app: modos, `update(Action)` e `view`.
+//!
+//! Fluxo: tecla → `Action` (por modo) → `App::update` (único lugar que muda o estado) → `view`.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -13,12 +15,48 @@ use crate::action::Action;
 use crate::core::message::{Message, MESSAGES, MSG_EVERY};
 use crate::core::rain::{Field, Rng};
 use crate::core::theme::{Palette, THEMES};
+use crate::pages::{self, Ctx, Page};
+use crate::ui::footer::{self, Status};
 use crate::ui::lock::{LockKey, Unlock};
-use crate::ui::rain::{color, RainWidget};
+use crate::ui::rain::{color, scaled, RainWidget};
+use crate::ui::shell;
 
-const MIN_SPEED: f32 = 0.1;
-const MAX_SPEED: f32 = 8.0;
+pub const MIN_SPEED: f32 = 0.1;
+pub const MAX_SPEED: f32 = 8.0;
 const SPEED_STEP: f32 = 1.25;
+/// Console volta ao Idle depois deste tempo sem tecla (exceto com texto no prompt).
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Brilho da chuva atrás do console.
+const CONSOLE_DIM: f32 = 0.35;
+/// Abaixo disto o console mostra só um aviso.
+const MIN_W: u16 = 60;
+const MIN_H: u16 = 20;
+
+/// Configurações vivas (o que os menus editam).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Settings {
+    pub theme: usize,
+    pub speed: f32,
+    pub fullscreen: bool,
+    pub hud: bool,
+}
+
+pub enum Mode {
+    /// Só a chuva, com os atalhos de uma tecla.
+    Idle,
+    /// Shell sobre a chuva atenuada.
+    Console,
+    /// Trava de saída; `from_console` diz para onde `Esc` volta.
+    Lock { unlock: Unlock, from_console: bool },
+}
+
+/// Onde vão as teclas dentro do console.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Focus {
+    Sidebar,
+    Page,
+    Prompt,
+}
 
 /// Área de desenho da chuva. Em modo janela devolve a área interna (dentro da moldura).
 fn compute_area(term_w: u16, term_h: u16, fullscreen: bool, hud: bool) -> Rect {
@@ -40,19 +78,23 @@ fn compute_area(term_w: u16, term_h: u16, fullscreen: bool, hud: bool) -> Rect {
 }
 
 pub struct App {
+    pub settings: Settings,
+    pub mode: Mode,
+    pub focus: Focus,
+    /// Páginas da barra lateral (`pages::registry()`), e a selecionada.
+    pub pages: Vec<Box<dyn Page>>,
+    pub page: usize,
+    /// Texto da linha de comando.
+    pub prompt: String,
+    pub fps: f32,
     pub field: Field,
-    palette: Palette,
     pub rng: Rng,
+    palette: Palette,
     term: (u16, u16),
     area: Rect,
-    theme: usize,
-    speed: f32,
-    pub fps: f32,
     paused: bool,
-    fullscreen: bool,
-    hud: bool,
-    /// `Some` enquanto a trava de saída está aberta.
-    unlock: Option<Unlock>,
+    /// Última tecla (para o timeout do console).
+    last_input: Instant,
     /// Mensagem escondida em andamento (no máximo uma por vez).
     msg: Option<Message>,
     /// Quando a próxima mensagem automática aparece.
@@ -61,37 +103,45 @@ pub struct App {
 
 impl App {
     pub fn new(term_w: u16, term_h: u16, mut rng: Rng) -> Self {
-        let (theme, fullscreen, hud) = (0, true, false);
-        let area = compute_area(term_w, term_h, fullscreen, hud);
+        let settings = Settings { theme: 0, speed: 1.0, fullscreen: true, hud: false };
+        let area = compute_area(term_w, term_h, settings.fullscreen, settings.hud);
         let field = Field::new(area.width as usize, area.height as usize, &mut rng);
+        let now = Instant::now();
 
         Self {
+            palette: Palette::new(&THEMES[settings.theme]),
+            settings,
+            mode: Mode::Idle,
+            focus: Focus::Sidebar,
+            pages: pages::registry(),
+            page: 0,
+            prompt: String::new(),
+            fps: 0.0,
             field,
-            palette: Palette::new(&THEMES[theme]),
             rng,
             term: (term_w, term_h),
             area,
-            theme,
-            speed: 1.0,
-            fps: 0.0,
             paused: false,
-            fullscreen,
-            hud,
-            unlock: None,
+            last_input: now,
             msg: None,
-            next_msg: Instant::now() + MSG_EVERY,
+            next_msg: now + MSG_EVERY,
         }
     }
 
     pub fn relayout(&mut self, term_w: u16, term_h: u16) {
         self.term = (term_w.max(1), term_h.max(1));
-        self.area = compute_area(self.term.0, self.term.1, self.fullscreen, self.hud);
+        self.area = compute_area(self.term.0, self.term.1, self.settings.fullscreen, self.settings.hud);
         self.field = Field::new(self.area.width as usize, self.area.height as usize, &mut self.rng);
 
         // A mensagem em andamento recomeça, centralizada no novo tamanho.
         if let Some(m) = &mut self.msg {
             *m = Message::new(m.text, self.field.cols, self.field.rows, Instant::now());
         }
+    }
+
+    /// O shell está na tela (console, ou trava aberta a partir dele).
+    fn shell_visible(&self) -> bool {
+        matches!(self.mode, Mode::Console | Mode::Lock { from_console: true, .. })
     }
 
     /// Começa uma mensagem aleatória, a menos que já haja uma em andamento.
@@ -124,43 +174,55 @@ impl App {
             self.fps = self.fps * 0.9 + (1.0 / dt) * 0.1;
         }
         if !self.paused {
-            self.field.update(dt, self.speed, &mut self.rng);
+            self.field.update(dt, self.settings.speed, &mut self.rng);
         }
-        self.tick_message(now); // depois da chuva: usa os rastros deste frame
+        // Mensagens só no Idle: no console a área central está ocupada.
+        if !self.shell_visible() {
+            self.tick_message(now); // depois da chuva: usa os rastros deste frame
+        }
+        let idle_for = now.saturating_duration_since(self.last_input);
+        if matches!(self.mode, Mode::Console) && self.prompt.is_empty() && idle_for >= IDLE_TIMEOUT {
+            self.mode = Mode::Idle;
+            self.focus = Focus::Sidebar;
+        }
     }
 
     /// Retorna `true` se o app deve encerrar.
     pub fn on_key(&mut self, key: KeyEvent, now: Instant) -> bool {
-        // Trava aberta: as teclas vão para o código, nada mais reage.
-        if let Some(lock) = &mut self.unlock {
-            match lock.key(key.code, now) {
-                LockKey::Unlocked => return true,
-                LockKey::Cancel => self.unlock = None,
-                LockKey::Typing => {}
-            }
-            return false;
-        }
-
+        self.last_input = now;
         let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
-        let action = if ctrl_c { Some(Action::RequestExit) } else { self.key_action(key.code) };
+        let action = match &mut self.mode {
+            // Trava aberta: as teclas vão para o código, nada mais reage.
+            Mode::Lock { unlock, .. } => match unlock.key(key.code, now) {
+                LockKey::Unlocked => return true,
+                LockKey::Cancel => Some(Action::Back),
+                LockKey::Typing => None,
+            },
+            _ if ctrl_c => Some(Action::RequestExit),
+            Mode::Idle => self.idle_key(key.code),
+            Mode::Console => self.console_key(key),
+        };
         if let Some(action) = action {
             self.update(action, now);
         }
         false
     }
 
-    /// Atalho de teclado → intenção.
-    fn key_action(&self, code: KeyCode) -> Option<Action> {
+    /// Atalhos do Idle (os de sempre) → intenção.
+    fn idle_key(&self, code: KeyCode) -> Option<Action> {
         let n = THEMES.len();
+        let (theme, speed) = (self.settings.theme, self.settings.speed);
         Some(match code {
+            KeyCode::Enter | KeyCode::F(1) => Action::OpenConsole,
+            KeyCode::Char(':') => Action::OpenPrompt,
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => Action::RequestExit,
             KeyCode::Char('f') | KeyCode::Char('F') | KeyCode::F(11) => Action::ToggleFullscreen,
             KeyCode::Char('h') | KeyCode::Char('H') => Action::ToggleHud,
             KeyCode::Char(' ') | KeyCode::Char('p') | KeyCode::Char('P') => Action::TogglePause,
-            KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Up => Action::SetSpeed(self.speed * SPEED_STEP),
-            KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Down => Action::SetSpeed(self.speed / SPEED_STEP),
-            KeyCode::Char('t') | KeyCode::Right | KeyCode::Tab => Action::SetTheme((self.theme + 1) % n),
-            KeyCode::Char('T') | KeyCode::Left | KeyCode::BackTab => Action::SetTheme((self.theme + n - 1) % n),
+            KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Up => Action::SetSpeed(speed * SPEED_STEP),
+            KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Down => Action::SetSpeed(speed / SPEED_STEP),
+            KeyCode::Char('t') | KeyCode::Right | KeyCode::Tab => Action::SetTheme((theme + 1) % n),
+            KeyCode::Char('T') | KeyCode::Left | KeyCode::BackTab => Action::SetTheme((theme + n - 1) % n),
             // '1'..'9' → 0..8, '0' → 9 (ordem do teclado).
             KeyCode::Char(c) if c.is_ascii_digit() => Action::SetTheme(((c as u8 - b'0' + 9) % 10) as usize),
             KeyCode::Char('w') | KeyCode::Char('W') => Action::ShowMessage,
@@ -169,57 +231,122 @@ impl App {
         })
     }
 
+    /// Teclas do console, conforme o foco. Editar o prompt e mover o foco é estado local.
+    fn console_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let n = self.pages.len();
+        match (self.focus, key.code) {
+            (_, KeyCode::Esc) => Some(Action::Back),
+            (Focus::Prompt, KeyCode::Enter) => Some(Action::RunCommand(self.prompt.clone())),
+            (Focus::Prompt, KeyCode::Backspace) => {
+                self.prompt.pop();
+                None
+            }
+            (Focus::Prompt, KeyCode::Char(c)) => {
+                self.prompt.push(c);
+                None
+            }
+            (Focus::Prompt, _) => None,
+            (_, KeyCode::Char(':')) => Some(Action::OpenPrompt),
+            (Focus::Sidebar, KeyCode::Up) => Some(Action::Navigate(self.pages[(self.page + n - 1) % n].id())),
+            (Focus::Sidebar, KeyCode::Down) => Some(Action::Navigate(self.pages[(self.page + 1) % n].id())),
+            (Focus::Sidebar, KeyCode::Enter | KeyCode::Right | KeyCode::Tab) => {
+                self.focus = Focus::Page;
+                None
+            }
+            (Focus::Sidebar, _) => None,
+            (Focus::Page, _) => {
+                let ctx = Ctx { settings: &self.settings, accent: color(self.palette.accent), focused: true };
+                self.pages[self.page].on_key(key, &ctx)
+            }
+        }
+    }
+
     /// Único lugar que muda o estado em resposta a uma intenção.
-    fn update(&mut self, action: Action, now: Instant) {
-        let (w, h) = self.term;
+    pub fn update(&mut self, action: Action, now: Instant) {
+        let s = self.settings.clone();
         match action {
-            Action::SetTheme(i) if i < THEMES.len() => {
-                self.theme = i;
-                self.palette = Palette::new(&THEMES[i]);
-            }
+            Action::SetTheme(theme) if theme < THEMES.len() => self.set_settings(Settings { theme, ..s }),
             Action::SetTheme(_) => {}
-            Action::SetSpeed(s) => self.speed = s.clamp(MIN_SPEED, MAX_SPEED),
+            Action::SetSpeed(speed) => self.set_settings(Settings { speed, ..s }),
+            Action::ToggleFullscreen => self.set_settings(Settings { fullscreen: !s.fullscreen, ..s }),
+            Action::ToggleHud => self.set_settings(Settings { hud: !s.hud, ..s }),
+            Action::SetSettings(new) => self.set_settings(new),
             Action::TogglePause => self.paused = !self.paused,
-            Action::ToggleFullscreen => {
-                self.fullscreen = !self.fullscreen;
-                self.relayout(w, h);
-            }
-            Action::ToggleHud => {
-                self.hud = !self.hud;
-                self.relayout(w, h);
-            }
             Action::ShowMessage => self.start_message(),
-            Action::RestartRain => self.relayout(w, h),
-            Action::RequestExit => self.unlock = Some(Unlock::new(now)),
+            Action::RestartRain => self.relayout(self.term.0, self.term.1),
+            Action::OpenConsole => {
+                self.mode = Mode::Console;
+                self.focus = Focus::Sidebar;
+            }
+            Action::OpenPrompt => {
+                self.mode = Mode::Console;
+                self.focus = Focus::Prompt;
+            }
+            Action::Navigate(id) => {
+                if let Some(i) = self.pages.iter().position(|p| p.id() == id) {
+                    self.page = i;
+                    self.mode = Mode::Console;
+                }
+            }
+            Action::Back => match (&self.mode, self.focus) {
+                (Mode::Console, Focus::Prompt) => {
+                    self.prompt.clear();
+                    self.focus = Focus::Sidebar;
+                }
+                (Mode::Console, Focus::Page) => self.focus = Focus::Sidebar,
+                (Mode::Console, Focus::Sidebar) => self.mode = Mode::Idle,
+                (Mode::Lock { from_console: true, .. }, _) => self.mode = Mode::Console,
+                (Mode::Lock { .. } | Mode::Idle, _) => self.mode = Mode::Idle,
+            },
+            // Ponto de extensão: `commands/` interpreta a linha e devolve outra `Action`.
+            Action::RunCommand(_) => self.prompt.clear(),
+            Action::RequestExit => {
+                let from_console = matches!(self.mode, Mode::Console);
+                self.mode = Mode::Lock { unlock: Unlock::new(now), from_console };
+            }
+        }
+    }
+
+    /// Aplica configurações novas, refazendo só o que mudou (paleta, layout).
+    fn set_settings(&mut self, mut new: Settings) {
+        new.speed = new.speed.clamp(MIN_SPEED, MAX_SPEED);
+        new.theme = new.theme.min(THEMES.len() - 1);
+        let old = std::mem::replace(&mut self.settings, new);
+        if old.theme != self.settings.theme {
+            self.palette = Palette::new(&THEMES[self.settings.theme]);
+        }
+        if (old.fullscreen, old.hud) != (self.settings.fullscreen, self.settings.hud) {
+            self.relayout(self.term.0, self.term.1);
         }
     }
 
     pub fn view(&mut self, frame: &mut Frame) {
         let full = frame.area();
         let accent = color(self.palette.accent);
+        let shell = self.shell_visible();
         let buf = frame.buffer_mut();
 
         // Moldura (modo janela).
-        if !self.fullscreen {
+        if !self.settings.fullscreen {
             Block::bordered()
-                .title(format!(" {} ", THEMES[self.theme].name))
-                .border_style(Style::new().fg(accent))
+                .title(format!(" {} ", THEMES[self.settings.theme].name))
+                .border_style(Style::new().fg(if shell { scaled(self.palette.accent, CONSOLE_DIM) } else { accent }))
                 .render(self.area.outer(ratatui::layout::Margin::new(1, 1)), buf);
         }
 
         RainWidget {
             field: &self.field,
             palette: &self.palette,
-            lit: self.msg.as_ref().map(|m| &m.lit[..]),
-            brightness: 1.0,
+            lit: if shell { None } else { self.msg.as_ref().map(|m| &m.lit[..]) },
+            brightness: if shell { CONSOLE_DIM } else { 1.0 },
         }
         .render(self.area, buf);
 
-        if self.hud && full.height > 0 {
+        if self.settings.hud && !shell && full.height > 0 {
             let line = format!(
-                " matrix·rain │ tema {:<13} │ vel {:.2}x │ {:>3.0} fps │ {:<8}│ f janela/fullscreen · +/- velocidade · t tema · espaço pausa · w mensagem · h hud · q sair (código) ",
-                THEMES[self.theme].name,
-                self.speed,
+                " matrix·rain │ tema {:<13} │ vel {:.2}x │ {:>3.0} fps │ {:<8}│ Enter console · f janela/fullscreen · +/- velocidade · t tema · espaço pausa · w mensagem · h hud · q sair (código) ",
+                THEMES[self.settings.theme].name,
+                self.settings.speed,
                 self.fps,
                 if self.paused { "PAUSADO " } else { "rodando " },
             );
@@ -227,9 +354,38 @@ impl App {
             Line::styled(line, Style::new().fg(accent)).render(row, buf);
         }
 
-        if let Some(lock) = &self.unlock {
-            lock.render(full, buf, accent, &mut self.rng, Instant::now());
+        if shell {
+            self.draw_shell(full, buf);
         }
+
+        if let Mode::Lock { unlock, .. } = &self.mode {
+            unlock.render(full, buf, accent, &mut self.rng, Instant::now());
+        }
+    }
+
+    fn draw_shell(&mut self, full: Rect, buf: &mut ratatui::buffer::Buffer) {
+        let accent = color(self.palette.accent);
+        let dim = scaled(self.palette.accent, 0.55);
+        if full.width < MIN_W || full.height < MIN_H {
+            let msg = format!("aumente o terminal: mínimo {MIN_W}×{MIN_H}");
+            let row = Rect::new(full.x, full.y + full.height / 2, full.width, 1);
+            Line::styled(msg, Style::new().fg(accent)).centered().render(row, buf);
+            return;
+        }
+
+        let r = shell::layout(full);
+        let hints = match self.focus {
+            Focus::Sidebar => shell::SIDEBAR_HINTS,
+            Focus::Page => self.pages[self.page].hints(),
+            Focus::Prompt => shell::PROMPT_HINTS,
+        };
+        let crumb = format!("CONSOLE › {}", self.pages[self.page].title());
+        shell::frame(&r, buf, &crumb, footer::hints(hints, accent, dim), accent, dim);
+        shell::sidebar(r.sidebar, buf, &self.pages, self.page, self.focus == Focus::Sidebar, accent);
+        let ctx = Ctx { settings: &self.settings, accent, focused: self.focus == Focus::Page };
+        self.pages[self.page].render(r.workspace, buf, &ctx);
+        shell::prompt(r.prompt, buf, &self.prompt, self.focus == Focus::Prompt, accent, dim);
+        footer::render(r.footer, buf, &Status { fps: self.fps }, dim);
     }
 }
 
@@ -238,35 +394,170 @@ mod tests {
     use super::*;
     use crate::core::message::{build_mask, Phase};
     use crate::core::rain::CHARSET;
+    use crate::pages::PageId;
     use crate::ui::lock::FIELD_W;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     fn key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> bool {
         app.on_key(KeyEvent::new(code, mods), Instant::now())
     }
 
+    fn k(app: &mut App, code: KeyCode) -> bool {
+        key(app, code, KeyModifiers::NONE)
+    }
+
     fn press(app: &mut App, s: &str) -> bool {
-        s.chars().any(|c| key(app, KeyCode::Char(c), KeyModifiers::NONE))
+        s.chars().any(|c| k(app, KeyCode::Char(c)))
+    }
+
+    /// Desenha o app num TestBackend e devolve a tela como texto.
+    fn screen(app: &mut App, w: u16, h: u16) -> String {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| app.view(f)).unwrap();
+        let buf = term.backend().buffer();
+        (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n").collect()
+    }
+
+    fn unlock(app: &App) -> &Unlock {
+        match &app.mode {
+            Mode::Lock { unlock, .. } => unlock,
+            _ => panic!("trava fechada"),
+        }
     }
 
     #[test]
     fn exit_requires_code() {
         let mut app = App::new(80, 24, Rng::new(1));
-        assert!(!key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE)); // só abre a trava
-        assert!(app.unlock.is_some());
+        assert!(!k(&mut app, KeyCode::Char('q'))); // só abre a trava
+        assert!(matches!(app.mode, Mode::Lock { from_console: false, .. }));
         assert!(!press(&mut app, "qualquer coisa")); // aceita qualquer texto
-        assert!(!key(&mut app, KeyCode::Enter, KeyModifiers::NONE)); // errou → recomeça
-        assert!(app.unlock.as_ref().unwrap().typed.is_empty());
+        assert!(!k(&mut app, KeyCode::Enter)); // errou → recomeça
+        assert!(unlock(&app).typed.is_empty());
         assert!(!press(&mut app, &"x".repeat(50))); // não passa do campo
-        assert_eq!(app.unlock.as_ref().unwrap().typed.len(), FIELD_W - 1);
-        assert!(!key(&mut app, KeyCode::Esc, KeyModifiers::NONE)); // cancela
-        assert!(app.unlock.is_none());
+        assert_eq!(unlock(&app).typed.len(), FIELD_W - 1);
+        assert!(screen(&mut app, 80, 24).contains('┌')); // a caixa aparece
+        assert!(!k(&mut app, KeyCode::Esc)); // cancela
+        assert!(matches!(app.mode, Mode::Idle));
         assert!(!key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(!press(&mut app, "MATRIX")); // sem Enter não sai
-        assert!(key(&mut app, KeyCode::Enter, KeyModifiers::NONE)); // sai
+        assert!(k(&mut app, KeyCode::Enter)); // sai
     }
 
     #[test]
-    fn messages_build_hold_wash() {
+    fn console_opens_and_closes() {
+        let mut app = App::new(80, 24, Rng::new(1));
+        assert!(!screen(&mut app, 80, 24).contains("MATRIX//OS"));
+        for open in [KeyCode::Enter, KeyCode::F(1)] {
+            k(&mut app, open);
+            assert!(matches!(app.mode, Mode::Console));
+            assert_eq!(app.focus, Focus::Sidebar);
+            k(&mut app, KeyCode::Esc);
+            assert!(matches!(app.mode, Mode::Idle));
+        }
+        k(&mut app, KeyCode::Char(':')); // abre direto no prompt
+        assert_eq!(app.focus, Focus::Prompt);
+        press(&mut app, "theme");
+        assert_eq!(app.prompt, "theme");
+        k(&mut app, KeyCode::Esc); // limpa e volta para a barra lateral
+        assert!(app.prompt.is_empty() && app.focus == Focus::Sidebar);
+        k(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Idle));
+    }
+
+    #[test]
+    fn console_layout_sizes() {
+        for (w, h) in [(60, 20), (80, 24), (160, 48)] {
+            let mut app = App::new(w, h, Rng::new(1));
+            k(&mut app, KeyCode::Enter);
+            let s = screen(&mut app, w, h);
+            for text in ["MATRIX//OS", "CONSOLE › VÍDEO", "TEMA", "◂ MATRIX ▸", " > ", "fps", "UTC"] {
+                assert!(s.contains(text), "{w}x{h}: falta {text:?}\n{s}");
+            }
+            // Barra lateral: nomes inteiros só a partir de 100 colunas; senão, iniciais.
+            assert_eq!(s.contains("▸ VÍDEO"), w >= 100, "{w}x{h}\n{s}");
+        }
+        // Abaixo do mínimo: só o aviso.
+        let mut app = App::new(50, 15, Rng::new(1));
+        k(&mut app, KeyCode::Enter);
+        assert!(screen(&mut app, 50, 15).contains("mínimo"));
+    }
+
+    #[test]
+    fn sidebar_navigation_and_exit_page() {
+        let mut app = App::new(160, 48, Rng::new(1));
+        k(&mut app, KeyCode::Enter);
+        assert_eq!(app.pages[app.page].id(), PageId::Video);
+        k(&mut app, KeyCode::Down);
+        assert_eq!(app.pages[app.page].id(), PageId::Exit);
+        assert!(screen(&mut app, 160, 48).contains("CONSOLE › SAIR"));
+        k(&mut app, KeyCode::Down); // dá a volta
+        assert_eq!(app.pages[app.page].id(), PageId::Video);
+        k(&mut app, KeyCode::Up);
+        assert_eq!(app.pages[app.page].id(), PageId::Exit);
+
+        // SAIR → Enter no botão abre a trava; Esc volta ao console.
+        k(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Page);
+        k(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Lock { from_console: true, .. }));
+        assert!(screen(&mut app, 160, 48).contains("MATRIX//OS")); // console continua atrás
+        k(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Console));
+        k(&mut app, KeyCode::Esc); // página → barra lateral
+        assert_eq!(app.focus, Focus::Sidebar);
+        k(&mut app, KeyCode::Esc); // → Idle
+        assert!(matches!(app.mode, Mode::Idle));
+    }
+
+    #[test]
+    fn video_page_changes_live_state() {
+        let mut app = App::new(160, 48, Rng::new(1));
+        k(&mut app, KeyCode::Enter);
+        k(&mut app, KeyCode::Enter); // foco na página VÍDEO
+        k(&mut app, KeyCode::Right); // TEMA ▸
+        assert_eq!(app.settings.theme, 1);
+        assert!(screen(&mut app, 160, 48).contains("◂ CYBERPUNK 2077 ▸"));
+        k(&mut app, KeyCode::Left);
+        k(&mut app, KeyCode::Left); // dá a volta
+        assert_eq!(app.settings.theme, THEMES.len() - 1);
+        k(&mut app, KeyCode::Down); // VELOCIDADE
+        k(&mut app, KeyCode::Right);
+        assert_eq!(app.settings.speed, 1.25);
+        k(&mut app, KeyCode::Down); // TELA CHEIA
+        k(&mut app, KeyCode::Enter);
+        assert!(!app.settings.fullscreen);
+        assert!(app.area.width < 160); // relayout com moldura
+        k(&mut app, KeyCode::Down); // HUD
+        k(&mut app, KeyCode::Char(' '));
+        assert!(app.settings.hud);
+    }
+
+    #[test]
+    fn console_idle_timeout() {
+        let mut app = App::new(80, 24, Rng::new(1));
+        let t0 = Instant::now();
+        app.on_key(KeyEvent::from(KeyCode::Enter), t0);
+        app.tick(0.0, t0 + IDLE_TIMEOUT - Duration::from_secs(1));
+        assert!(matches!(app.mode, Mode::Console));
+        app.tick(0.0, t0 + IDLE_TIMEOUT);
+        assert!(matches!(app.mode, Mode::Idle));
+
+        // Com texto no prompt não dispara.
+        app.on_key(KeyEvent::from(KeyCode::Char(':')), t0);
+        app.on_key(KeyEvent::from(KeyCode::Char('x')), t0);
+        app.tick(0.0, t0 + IDLE_TIMEOUT * 2);
+        assert!(matches!(app.mode, Mode::Console));
+        // Uma tecla reinicia a contagem.
+        app.on_key(KeyEvent::from(KeyCode::Backspace), t0 + IDLE_TIMEOUT * 2);
+        app.tick(0.0, t0 + IDLE_TIMEOUT * 2 + Duration::from_secs(30));
+        assert!(matches!(app.mode, Mode::Console));
+        app.tick(0.0, t0 + IDLE_TIMEOUT * 3);
+        assert!(matches!(app.mode, Mode::Idle));
+    }
+
+    #[test]
+        fn messages_build_hold_wash() {
         // Toda mensagem cabe num terminal 80x24 (e nada quebra num minúsculo).
         for text in MESSAGES {
             assert!(build_mask(text, 80, 24).iter().any(|&b| b), "{text} não coube");
@@ -274,7 +565,7 @@ mod tests {
         }
 
         let mut app = App::new(80, 24, Rng::new(1));
-        assert!(!key(&mut app, KeyCode::Char('w'), KeyModifiers::NONE));
+        assert!(!k(&mut app, KeyCode::Char('w')));
         let first = app.msg.as_ref().unwrap().text.as_ptr();
         app.start_message(); // já há uma em andamento: ignora
         assert_eq!(app.msg.as_ref().unwrap().text.as_ptr(), first);
@@ -312,26 +603,31 @@ mod tests {
 
         let n = 600;
         let mut app = App::new(240, 70, Rng::new(1));
-        let mut term = Terminal::new(TestBackend::new(240, 70)).unwrap();
-        let t = Instant::now();
-        for _ in 0..n {
-            app.field.update(1.0 / 60.0, 1.0, &mut app.rng);
-            term.draw(|f| app.view(f)).unwrap();
-        }
-        let e = t.elapsed();
-        println!("TestBackend: {:?}/frame ({:.0} fps)", e / n, n as f64 / e.as_secs_f64());
-
+        let mut test = Terminal::new(TestBackend::new(240, 70)).unwrap();
         // Backend real (gera os escapes ANSI), escrevendo em `sink`, sem tty.
         let viewport = Viewport::Fixed(Rect::new(0, 0, 240, 70));
-        let backend = CrosstermBackend::new(std::io::sink());
-        let mut term = Terminal::with_options(backend, TerminalOptions { viewport }).unwrap();
-        let t = Instant::now();
-        for _ in 0..n {
-            app.field.update(1.0 / 60.0, 1.0, &mut app.rng);
-            term.draw(|f| app.view(f)).unwrap();
+        let mut real = Terminal::with_options(CrosstermBackend::new(std::io::sink()), TerminalOptions { viewport }).unwrap();
+
+        for mode in ["idle", "console"] {
+            if mode == "console" {
+                k(&mut app, KeyCode::Enter);
+            }
+            let t = Instant::now();
+            for _ in 0..n {
+                app.field.update(1.0 / 60.0, 1.0, &mut app.rng);
+                test.draw(|f| app.view(f)).unwrap();
+            }
+            let e = t.elapsed();
+            println!("{mode} TestBackend: {:?}/frame ({:.0} fps)", e / n, n as f64 / e.as_secs_f64());
+
+            let t = Instant::now();
+            for _ in 0..n {
+                app.field.update(1.0 / 60.0, 1.0, &mut app.rng);
+                real.draw(|f| app.view(f)).unwrap();
+            }
+            let e = t.elapsed();
+            println!("{mode} Crossterm: {:?}/frame ({:.0} fps)", e / n, n as f64 / e.as_secs_f64());
+            assert!(e / n < Duration::from_micros(16_667), "abaixo de 60 FPS");
         }
-        let e = t.elapsed();
-        println!("Crossterm: {:?}/frame ({:.0} fps)", e / n, n as f64 / e.as_secs_f64());
-        assert!(e / n < std::time::Duration::from_micros(16_667), "abaixo de 60 FPS");
     }
 }
