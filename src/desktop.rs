@@ -45,6 +45,9 @@ struct Desktop {
     mods: ModifiersState,
     last: Option<Instant>,
     next: Option<Instant>,
+    /// Janela oculta/minimizada: o SO não apresenta os frames e a GPU os acumula
+    /// (~35 MB/s no macOS), então não desenha nem simula até voltar.
+    occluded: bool,
     err: Option<Box<dyn Error>>,
 }
 
@@ -99,6 +102,12 @@ impl ApplicationHandler for Desktop {
                     app.relayout(cells.width, cells.height);
                 }
             }
+            WindowEvent::Occluded(o) => {
+                self.occluded = o;
+                if !o {
+                    self.next = None; // retoma já, sem salto de dt (clamp em 0.06)
+                }
+            }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Some(key) = to_crossterm(&event, self.mods) {
@@ -107,7 +116,7 @@ impl ApplicationHandler for Desktop {
                     }
                 }
             }
-            WindowEvent::RedrawRequested => {
+            WindowEvent::RedrawRequested if !self.occluded => {
                 if let Err(e) = term.draw(|f| app.view(f)) {
                     self.fail(el, e.into());
                 }
@@ -118,6 +127,10 @@ impl ApplicationHandler for Desktop {
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         let (Some(app), Some(window)) = (self.app.as_mut(), self.window.as_ref()) else { return };
+        if self.occluded {
+            el.set_control_flow(ControlFlow::Wait); // dorme até um evento (Occluded(false))
+            return;
+        }
         let now = Instant::now();
         let next = *self.next.get_or_insert(now);
         if now >= next {
