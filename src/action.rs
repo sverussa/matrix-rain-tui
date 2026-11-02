@@ -31,4 +31,6 @@ pub enum Action {
     Discard,
     /// Volta a `Settings::default()` (sem salvar).
     ResetDefaults,
+    /// Texto na linha de mensagens do console (saída de comando; vazio limpa).
+    Feedback(String),
 }

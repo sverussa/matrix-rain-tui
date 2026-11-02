@@ -7,7 +7,9 @@ mod action;
 mod app;
 mod config;
 mod core;
+mod commands;
 mod pages;
+mod sys;
 mod ui;
 
 use std::io;
@@ -30,6 +32,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
         .unwrap_or(0x9E37_79B9_7F4A_7C15);
     let mut app = App::new(size.width, size.height, Rng::new(seed));
     app.load_config(config::path());
+    app.sys_rx = Some(sys::spawn());
     let frame_budget = Duration::from_micros(1_000_000 / TARGET_FPS);
     let mut last = Instant::now();
 

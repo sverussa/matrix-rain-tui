@@ -10,6 +10,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.6"
 # Configuração persistente (config.toml no diretório de config do SO).
 directories = "6.0.0"
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 
 # Otimizações de release: binário menor, loop mais rápido.
 [profile.release]

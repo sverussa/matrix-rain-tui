@@ -53,6 +53,20 @@ Menus: **VÍDEO** (tema, velocidade, tela cheia, HUD), **CHUVA** (rastro, densid
 Tudo muda ao vivo. Nas páginas de ajuste, **APLICAR** salva, **DESCARTAR** volta ao estado de quando o console abriu (ou do último Aplicar) e **PADRÕES** (Enter duas vezes) volta aos valores de fábrica sem salvar. O breadcrumb mostra `● alterações` enquanto houver algo não aplicado.
 
 O arquivo é `config.toml` no diretório de configuração do SO (`~/.config/matrix-rain/` no Linux, `~/Library/Application Support/matrix-rain/` no macOS). Campos ausentes usam o padrão; arquivo inválido é ignorado (padrões) e registrado no LOG.
+A página **SISTEMA** mostra CPU (total, histórico e por núcleo), memória, load average e uptime. O rodapé do console mostra o resumo (CPU com sparkline, MEM, LOAD, UP, FPS e relógio UTC); o que não cabe na largura some por ordem de prioridade.
+
+### Linha de comando
+
+`:` abre o prompt. `Tab` completa o comando e o argumento (temas, páginas), `↑↓` percorre o histórico da sessão e a saída ou o erro aparece logo acima do prompt.
+
+| Comando | Ação |
+|---------|------|
+| `theme <n\|nome>` | Troca o tema (`theme 7`, `theme dracula`) |
+| `speed <x>` | Velocidade da chuva (`speed 1.5`) |
+| `pause`, `fullscreen` (`fs`), `hud`, `msg`, `restart` | Mesmo que os atalhos do Idle |
+| `open <página>` | Abre uma página (`open system`) |
+| `help [comando]`, `clear` | Ajuda / limpa a linha de mensagens |
+| `exit` (`quit`, `q`) | Abre a trava de saída |
 
 ## Temas
 
@@ -79,6 +93,8 @@ Elas só aparecem no Idle. As mensagens ficam na lista `MESSAGES` em `src/core/m
 - **`ui/`** — widgets ratatui: `RainWidget` escreve a chuva direto no `Buffer`; `shell.rs` (layout do console), `footer.rs` (status e dicas), `lock.rs` (trava de saída).
 - **`pages/`** — um arquivo por menu. Cada página implementa a trait `Page`; a maioria é uma `SettingsPage` com uma lista de `Item` (toggle, slider, escolha, botão). Para adicionar um menu, crie o arquivo e acrescente uma linha em `pages::registry()`.
 - **`config.rs`** — `Settings` ⇄ `config.toml` (serde + toml + directories).
+- **`commands/`** — `trait Command` e os comandos embutidos (`builtin.rs`); cada comando devolve uma `Action`.
+- **`sys.rs`** — `SysMonitor`: thread que lê o sistema com `sysinfo` e manda um `SysSnapshot` por segundo via `mpsc`; o loop só faz `try_recv`, sem travar o frame.
 - **`app.rs`** — `App` e os modos `Idle`, `Console` e `Lock`. Fluxo único: tecla → `Action` (`action.rs`) → `App::update` → `App::view`.
 - **`main.rs`** — loop a ~60 FPS: lê entrada sem bloquear, avança a simulação com o `dt` real e chama `Terminal::draw`.
 

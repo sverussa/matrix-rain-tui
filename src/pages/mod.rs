@@ -6,6 +6,7 @@ pub mod keys;
 pub mod log;
 pub mod messages;
 pub mod rain;
+pub mod system;
 pub mod video;
 
 use std::ops::RangeInclusive;
@@ -19,6 +20,7 @@ use ratatui::widgets::Widget;
 
 use crate::action::Action;
 use crate::app::Settings;
+use crate::sys::SysSnapshot;
 
 /// Páginas registradas, na ordem da barra lateral.
 pub fn registry() -> Vec<Box<dyn Page>> {
@@ -26,6 +28,7 @@ pub fn registry() -> Vec<Box<dyn Page>> {
         Box::new(video::page()),
         Box::new(rain::page()),
         Box::new(messages::page()),
+        Box::new(system::SystemPage),
         Box::new(keys::KeysPage),
         Box::new(a11y::page()),
         Box::new(log::LogPage),
@@ -41,6 +44,7 @@ pub enum PageId {
     Keys,
     A11y,
     Log,
+    System,
     Exit,
 }
 
@@ -70,6 +74,8 @@ pub struct Ctx<'a> {
     pub accent: Color,
     /// A página tem o foco do teclado.
     pub focused: bool,
+    /// Último snapshot do `SysMonitor` (`None` até chegar o primeiro).
+    pub sys: Option<&'a SysSnapshot>,
 }
 
 pub const DEFAULT_HINTS: &[(&str, &str)] =
