@@ -1,3 +1,5 @@
+// Sem janela de console no Windows quando o binário é a versão desktop.
+#![cfg_attr(all(windows, feature = "desktop"), windows_subsystem = "windows")]
 //! matrix-rain — chuva digital estilo Matrix no terminal.
 //!
 //! O núcleo (`core/`) não conhece o terminal; a UI (`ui/`) desenha num `Buffer`
@@ -6,6 +8,8 @@
 mod action;
 mod app;
 mod core;
+#[cfg(feature = "desktop")]
+mod desktop;
 mod pages;
 mod ui;
 
@@ -63,10 +67,19 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
     }
 }
 
-fn main() -> io::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Com a feature `desktop`: janela por padrão fora de um TTY ou com `--window`; `--tty` força o terminal.
+    #[cfg(feature = "desktop")]
+    {
+        use std::io::IsTerminal;
+        let has = |flag: &str| std::env::args().any(|a| a == flag);
+        if has("--window") || (!has("--tty") && !io::stdout().is_terminal()) {
+            return desktop::run();
+        }
+    }
     // `init` liga raw mode + tela alternativa e instala um panic hook que restaura o terminal.
     let mut terminal = ratatui::init();
     let result = run(&mut terminal);
     ratatui::restore();
-    result
+    Ok(result?)
 }
