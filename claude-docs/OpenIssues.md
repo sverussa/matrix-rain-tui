@@ -1,5 +1,7 @@
 # Open Issues — Issue01 (console ratatui + versão desktop)
 
+> Issue02 (mouse, ratcn, tachyonfx, AÇÕES › SHOWCASE e RELÓGIO): [Issue02.md](Issue02.md).
+
 Estado em 2026-11-02, branch `mark-01` (merge final `0c52198`). Plano original: [Issue01.html](Issue01.html).
 
 ## Decisões que mudaram o plano
@@ -27,7 +29,7 @@ Estado em 2026-11-02, branch `mark-01` (merge final `0c52198`). Plano original: 
 
 ### Console / UX
 - [x] Animação de abrir/fechar o console (250 ms): cortina de chuva por coluna com katakana na frente; desligada com "Reduzir movimento".
-- [ ] Relógio em horário local (está em UTC; `time` com `local-offset` falha com várias threads no Unix). Marcado com `ponytail:` no código.
+- [x] Relógio em horário local: `chrono::Local` (Issue02).
 - [ ] "Reduzir movimento" não desliga o embaralhamento da trava de saída (`ui/lock.rs`).
 - [x] Ícones próprios na sidebar compacta: katakana do `CHARSET` com a inicial do nome em japonês (ｴ ｱ ﾒ ｷ ﾐ ﾛ ｼ ｵ), em `Page::icon()`.
 - [ ] Nenhum `Item::Button { confirm: true }` além de PADRÕES.
@@ -45,7 +47,7 @@ Estado em 2026-11-02, branch `mark-01` (merge final `0c52198`). Plano original: 
 - [ ] Rodar `cargo bundle` e gerar o `.app` (cargo-bundle não instalado; só documentado em `make bundle`).
 - [ ] CI multiplataforma, assinatura e notarização no macOS.
 - [ ] Testar no Windows e no Linux.
-- [ ] Teste unitário para `to_crossterm`.
+- [ ] Teste unitário para `to_crossterm` (a conversão de mouse já tem: `pixels_to_cells`).
 
 ### Verificação
 - [ ] Abrir o app num terminal real (só testado com `TestBackend`).

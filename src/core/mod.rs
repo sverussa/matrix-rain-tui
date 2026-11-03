@@ -1,3 +1,4 @@
+pub mod clock;
 pub mod message;
 pub mod rain;
 pub mod theme;

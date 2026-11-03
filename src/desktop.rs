@@ -8,12 +8,15 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent as CtKey, KeyModifiers, MouseButton as CtButton, MouseEvent as CtMouse, MouseEventKind,
+};
 use ratatui::style::Color;
 use ratatui::Terminal;
 use ratatui_wgpu::{Builder, Dimensions, Font, WgpuBackend};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
@@ -57,6 +60,9 @@ struct Desktop {
     term: Option<Terminal<WgpuBackend<'static, 'static>>>,
     app: Option<App>,
     mods: ModifiersState,
+    /// Célula sob o cursor e o botão segurado (para `Drag`).
+    cell: (u16, u16),
+    held: Option<CtButton>,
     last: Option<Instant>,
     next: Option<Instant>,
     /// Janela oculta/minimizada: o SO não apresenta os frames e a GPU os acumula
@@ -125,6 +131,33 @@ impl ApplicationHandler for Desktop {
                 }
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            WindowEvent::CursorMoved { position, .. } => {
+                let (Some(window), Ok(cells)) = (self.window.as_ref(), term.size()) else { return };
+                self.cell = to_cell(position, window.inner_size(), (cells.width, cells.height));
+                let kind = self.held.map_or(MouseEventKind::Moved, MouseEventKind::Drag);
+                app.on_mouse(mouse(kind, self.cell, self.mods), Instant::now());
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let Some(b) = to_button(button) else { return };
+                let kind = if state == ElementState::Pressed {
+                    self.held = Some(b);
+                    MouseEventKind::Down(b)
+                } else {
+                    self.held = None;
+                    MouseEventKind::Up(b)
+                };
+                app.on_mouse(mouse(kind, self.cell, self.mods), Instant::now());
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let y = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y as f64,
+                    MouseScrollDelta::PixelDelta(p) => p.y,
+                };
+                if y != 0.0 {
+                    let kind = if y > 0.0 { MouseEventKind::ScrollUp } else { MouseEventKind::ScrollDown };
+                    app.on_mouse(mouse(kind, self.cell, self.mods), Instant::now());
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Some(key) = to_crossterm(&event, self.mods) {
                     if app.on_key(key, Instant::now()) {
@@ -161,6 +194,38 @@ impl ApplicationHandler for Desktop {
     }
 }
 
+fn to_button(b: MouseButton) -> Option<CtButton> {
+    match b {
+        MouseButton::Left => Some(CtButton::Left),
+        MouseButton::Right => Some(CtButton::Right),
+        MouseButton::Middle => Some(CtButton::Middle),
+        _ => None,
+    }
+}
+
+fn mods_of(mods: ModifiersState) -> KeyModifiers {
+    let mut m = KeyModifiers::NONE;
+    m.set(KeyModifiers::SHIFT, mods.shift_key());
+    m.set(KeyModifiers::CONTROL, mods.control_key());
+    m.set(KeyModifiers::ALT, mods.alt_key());
+    m.set(KeyModifiers::SUPER, mods.super_key());
+    m
+}
+
+fn mouse(kind: MouseEventKind, (column, row): (u16, u16), mods: ModifiersState) -> CtMouse {
+    CtMouse { kind, column, row, modifiers: mods_of(mods) }
+}
+
+/// Pixel da janela → célula. O ratatui-wgpu desenha a grade a partir do canto superior esquerdo,
+/// com células de `pixels / colunas` (divisão inteira: a sobra fica na borda direita/inferior).
+fn to_cell(p: PhysicalPosition<f64>, px: PhysicalSize<u32>, (cols, rows): (u16, u16)) -> (u16, u16) {
+    let f = |v: f64, size: u32, n: u16| {
+        let cell = (size / n.max(1) as u32).max(1) as f64;
+        ((v.max(0.0) / cell) as u16).min(n.saturating_sub(1))
+    };
+    (f(p.x, px.width, cols), f(p.y, px.height, rows))
+}
+
 /// winit → crossterm, para o `App` continuar recebendo `crossterm::event::KeyEvent`.
 fn to_crossterm(ev: &KeyEvent, mods: ModifiersState) -> Option<CtKey> {
     if ev.state != ElementState::Pressed {
@@ -191,10 +256,25 @@ fn to_crossterm(ev: &KeyEvent, mods: ModifiersState) -> Option<CtKey> {
         },
         _ => return None,
     };
-    let mut m = KeyModifiers::NONE;
-    m.set(KeyModifiers::SHIFT, mods.shift_key());
-    m.set(KeyModifiers::CONTROL, mods.control_key());
-    m.set(KeyModifiers::ALT, mods.alt_key());
-    m.set(KeyModifiers::SUPER, mods.super_key());
-    Some(CtKey::new(code, m))
+    Some(CtKey::new(code, mods_of(mods)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pixels_to_cells() {
+        let size = PhysicalSize::new(800, 600);
+        assert_eq!(to_cell(PhysicalPosition::new(0.0, 0.0), size, (100, 30)), (0, 0));
+        assert_eq!(to_cell(PhysicalPosition::new(399.0, 301.0), size, (100, 30)), (49, 15));
+        // 805 px / 100 colunas = células de 8 px; a sobra de 5 px fica na borda.
+        assert_eq!(to_cell(PhysicalPosition::new(800.0, 0.0), PhysicalSize::new(805, 600), (100, 30)), (99, 0));
+        assert_eq!(to_cell(PhysicalPosition::new(796.0, 0.0), PhysicalSize::new(805, 600), (100, 30)), (99, 0));
+        assert_eq!(to_cell(PhysicalPosition::new(791.0, 0.0), PhysicalSize::new(805, 600), (100, 30)), (98, 0));
+        assert_eq!(to_cell(PhysicalPosition::new(900.0, -5.0), size, (100, 30)), (99, 0)); // fora: borda
+        let m = mouse(MouseEventKind::Down(CtButton::Left), (3, 4), ModifiersState::SHIFT);
+        assert_eq!((m.column, m.row, m.modifiers), (3, 4, KeyModifiers::SHIFT));
+        assert_eq!(to_button(MouseButton::Back), None);
+    }
 }

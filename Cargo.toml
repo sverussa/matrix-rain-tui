@@ -15,6 +15,9 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 ratatui-wgpu = { version = "0.6", default-features = false, optional = true }
 winit = { version = "0.30", optional = true }
 pollster = { version = "1", optional = true }
+ratcn = { version = "0.0.6", features = ["crossterm"] }
+tachyonfx = { version = "0.25", default-features = false, features = ["std", "std-duration"] }
+chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
 
 [features]
 desktop = ["dep:ratatui-wgpu", "dep:winit", "dep:pollster", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]

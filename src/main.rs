@@ -20,7 +20,8 @@ use std::io;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
+use ratatui::crossterm::execute;
 use ratatui::DefaultTerminal;
 
 use crate::app::App;
@@ -51,6 +52,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                         return Ok(());
                     }
                 }
+                Event::Mouse(m) => app.on_mouse(m, Instant::now()),
                 Event::Resize(w, h) => app.relayout(w, h),
                 _ => {}
             }
@@ -84,7 +86,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // `init` liga raw mode + tela alternativa e instala um panic hook que restaura o terminal.
     let mut terminal = ratatui::init();
+    // Mouse (clique, roda, hover). O hook do `init` restaura o terminal; este desliga o mouse antes.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        hook(info);
+    }));
+    execute!(io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal);
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     Ok(result?)
 }

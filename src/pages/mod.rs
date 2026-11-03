@@ -1,18 +1,20 @@
 //! Menus da barra lateral. Ponto de extensão: um arquivo por menu + uma linha em `registry()`.
 
 pub mod a11y;
+pub mod clock;
 pub mod exit;
 pub mod keys;
 pub mod log;
 pub mod messages;
 pub mod rain;
+pub mod showcase;
 pub mod system;
 pub mod video;
 
 use std::ops::RangeInclusive;
 
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
@@ -20,11 +22,14 @@ use ratatui::widgets::Widget;
 
 use crate::action::Action;
 use crate::app::Settings;
+use crate::core::clock::Clock;
 use crate::sys::SysSnapshot;
 
 /// Páginas registradas, na ordem da barra lateral.
 pub fn registry() -> Vec<Box<dyn Page>> {
     vec![
+        Box::new(showcase::ShowcasePage::new()),
+        Box::new(clock::ClockPage::new()),
         Box::new(video::page()),
         Box::new(rain::page()),
         Box::new(messages::page()),
@@ -36,9 +41,31 @@ pub fn registry() -> Vec<Box<dyn Page>> {
     ]
 }
 
-/// Menu CONFIG da barra lateral: agrupa todas as páginas menos SAIR.
-pub const CONFIG: &str = "CONFIG";
-pub const CONFIG_ICON: char = 'ｾ'; // 設定 settei
+/// Submenus do nível 1 da barra lateral. SAIR fica fora de qualquer grupo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Group {
+    Actions,
+    Config,
+}
+
+impl Group {
+    pub fn title(self) -> &'static str {
+        match self {
+            Group::Actions => "AÇÕES",
+            Group::Config => "CONFIG",
+        }
+    }
+
+    pub fn icon(self) -> char {
+        match self {
+            Group::Actions => 'ｺ', // コマンド komando
+            Group::Config => 'ｾ',  // 設定 settei
+        }
+    }
+}
+
+/// Nível 1 da barra lateral, em ordem; `None` = SAIR.
+pub const TOP: [Option<Group>; 3] = [Some(Group::Actions), Some(Group::Config), None];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PageId {
@@ -49,6 +76,8 @@ pub enum PageId {
     A11y,
     Log,
     System,
+    Showcase,
+    Clock,
     Exit,
 }
 
@@ -80,6 +109,10 @@ pub struct Ctx<'a> {
     pub focused: bool,
     /// Último snapshot do `SysMonitor` (`None` até chegar o primeiro).
     pub sys: Option<&'a SysSnapshot>,
+    /// Estado vivo do RELÓGIO (timer, alarme…), que mora no `App`.
+    pub clock: &'a Clock,
+    /// Efeitos e animações ligados ("Reduzir movimento" desliga).
+    pub motion: bool,
 }
 
 pub const DEFAULT_HINTS: &[(&str, &str)] =
@@ -89,6 +122,14 @@ pub const DEFAULT_HINTS: &[(&str, &str)] =
 pub trait Page {
     fn id(&self) -> PageId;
     fn title(&self) -> &str;
+    /// Submenu da barra lateral (`None` = item do nível 1, como SAIR).
+    fn group(&self) -> Option<Group> {
+        match self.id() {
+            PageId::Exit => None,
+            PageId::Showcase | PageId::Clock => Some(Group::Actions),
+            _ => Some(Group::Config),
+        }
+    }
     /// Ícone da barra lateral compacta: katakana da chuva, inicial do nome em japonês.
     fn icon(&self) -> char {
         match self.id() {
@@ -99,11 +140,25 @@ pub trait Page {
             PageId::A11y => 'ﾐ',     // 見やすさ miyasusa
             PageId::Log => 'ﾛ',      // ログ
             PageId::System => 'ｼ',   // システム
+            PageId::Showcase => 'ﾃ', // 展示 tenji
+            PageId::Clock => 'ﾄ',    // 時計 tokei
             PageId::Exit => 'ｵ',     // 終わり owari
         }
     }
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &Ctx);
     fn on_key(&mut self, key: KeyEvent, ctx: &Ctx) -> Option<Action>;
+    /// Mouse dentro da área de trabalho (`area` é a do último `render`).
+    fn on_mouse(&mut self, _ev: MouseEvent, _area: Rect, _ctx: &Ctx) -> Option<Action> {
+        None
+    }
+    /// A página está editando texto: `:` vai para ela, não abre o prompt.
+    fn typing(&self) -> bool {
+        false
+    }
+    /// Há um diálogo aberto na página: `Esc` vai para ela (fecha o diálogo).
+    fn modal(&self) -> bool {
+        false
+    }
     /// Dicas de tecla mostradas no rodapé quando esta página tem foco.
     fn hints(&self) -> &[(&str, &str)] {
         DEFAULT_HINTS
@@ -268,5 +323,32 @@ impl Page for SettingsPage {
             },
             _ => None,
         }
+    }
+
+    /// Clique escolhe o item e age como Enter (→ no slider/escolha); a roda move o cursor.
+    fn on_mouse(&mut self, ev: MouseEvent, area: Rect, ctx: &Ctx) -> Option<Action> {
+        let code = match ev.kind {
+            MouseEventKind::ScrollUp => KeyCode::Up,
+            MouseEventKind::ScrollDown => KeyCode::Down,
+            MouseEventKind::Down(_) => {
+                let i = ev.row.checked_sub(area.y + 1)? as usize;
+                if i >= self.items.len() {
+                    return None;
+                }
+                if i != self.cursor {
+                    self.cursor = i;
+                    self.armed = false;
+                }
+                // Slider e escolha: metade esquerda diminui, direita aumenta.
+                let left = ev.column < area.x + area.width / 2;
+                match self.items[i] {
+                    Item::Slider { .. } | Item::Choice { .. } if left => KeyCode::Left,
+                    Item::Slider { .. } | Item::Choice { .. } => KeyCode::Right,
+                    _ => KeyCode::Enter,
+                }
+            }
+            _ => return None,
+        };
+        self.on_key(KeyEvent::from(code), ctx)
     }
 }

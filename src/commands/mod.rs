@@ -77,7 +77,8 @@ mod tests {
 
     fn with_ctx<T>(f: impl FnOnce(&Ctx) -> T) -> T {
         let settings = Settings::default();
-        f(&Ctx { settings: &settings, log: &[], accent: Color::Green, focused: false, sys: None })
+        let clock = crate::core::clock::Clock::default();
+        f(&Ctx { settings: &settings, log: &[], accent: Color::Green, focused: false, sys: None, clock: &clock, motion: false })
     }
 
     #[test]
@@ -105,6 +106,24 @@ mod tests {
             assert!(matches!(run("help", ctx), Ok(Some(Action::Feedback(t))) if t.contains("theme") && t.contains("exit")));
             assert!(matches!(run("help speed", ctx), Ok(Some(Action::Feedback(t))) if t.starts_with("speed")));
             assert!(run("xyzzy", ctx).unwrap_err().contains("xyzzy"));
+            // RELÓGIO.
+            use crate::action::ClockCmd;
+            use crate::core::clock::Mode;
+            let c = |cmd| Ok(Some(Action::Clock(cmd)));
+            assert_eq!(run("clock", ctx), c(ClockCmd::Show(Mode::Clock)));
+            assert_eq!(run("clock pomodoro", ctx), c(ClockCmd::Show(Mode::Pomodoro)));
+            assert_eq!(run("clock CRONÔMETRO", ctx), c(ClockCmd::Show(Mode::Stopwatch)));
+            assert!(run("clock agora", ctx).is_err());
+            assert_eq!(run("timer 1h30m", ctx), c(ClockCmd::TimerStart(5400)));
+            assert_eq!(run("timer", ctx), c(ClockCmd::Show(Mode::Timer)));
+            assert!(run("timer já", ctx).unwrap_err().starts_with("uso: timer"));
+            assert_eq!(run("alarm 07:30", ctx), c(ClockCmd::AlarmSet(Some(450))));
+            assert_eq!(run("alarme off", ctx), c(ClockCmd::AlarmSet(None)));
+            assert!(run("alarm 25:00", ctx).is_err());
+            assert_eq!(run("sw lap", ctx), c(ClockCmd::Lap));
+            assert_eq!(run("pomo skip", ctx), c(ClockCmd::PomoSkip));
+            assert_eq!(run("open clock", ctx), Ok(Some(Action::Navigate(PageId::Clock))));
+            assert_eq!(run("open showcase", ctx), Ok(Some(Action::Navigate(PageId::Showcase))));
         });
     }
 

@@ -1,7 +1,5 @@
 //! Rodapé do console: linha de status + dicas de tecla (na borda inferior).
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -19,11 +17,9 @@ pub struct Status<'a> {
     pub sys: Option<&'a SysSnapshot>,
 }
 
-/// `HH:MM:SS` em UTC.
-// ponytail: stdlib só dá UTC; hora local precisa do crate `time` (e `local-offset` falha com várias threads no Unix).
+/// `HH:MM:SS` na hora local (`chrono::Local` funciona com várias threads).
 fn clock() -> String {
-    let s = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) % 86_400;
-    format!("{:02}:{:02}:{:02} UTC", s / 3600, s / 60 % 60, s % 60)
+    chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
 /// Segmentos na ordem da tela, com a prioridade da seção 07 (maior = some primeiro).
@@ -86,15 +82,16 @@ mod tests {
             uptime: 3 * 86_400 + 4 * 3600,
         };
         let status = Status { fps: 60.0, sys: Some(&snap) };
-        let all = ["CPU ▂▃▅▇▅ 23%", "MEM 9.0/16G", "LOAD 1.42", "UP 3d04h", "60fps", "UTC"];
+        let all = ["CPU ▂▃▅▇▅ 23%", "MEM 9.0/16G", "LOAD 1.42", "UP 3d04h", "60fps"];
         let cases: [(u16, &[&str]); 4] = [
-            (71, &all),
-            (60, &["CPU", "MEM", "60fps", "UTC"]),
-            (45, &["CPU", "MEM", "UTC"]),
-            (15, &["UTC"]),
+            (67, &all),
+            (56, &["CPU", "MEM", "60fps"]),
+            (40, &["CPU", "MEM"]),
+            (15, &[]),
         ];
         for (w, shown) in cases {
             let l = line(&status, w);
+            assert!(has_clock(&l), "{w}: sem relógio em {l:?}");
             for seg in all {
                 let key = seg.split(' ').next().unwrap();
                 assert_eq!(l.contains(seg), shown.contains(&key) || shown.contains(&seg), "{w}: {seg:?} em {l:?}");
@@ -102,6 +99,11 @@ mod tests {
         }
         // Sem snapshot: só FPS e relógio.
         let l = line(&Status { fps: 60.0, sys: None }, 40);
-        assert!(l.contains("60fps") && l.contains("UTC") && !l.contains("CPU"), "{l:?}");
+        assert!(l.contains("60fps") && has_clock(&l) && !l.contains("CPU"), "{l:?}");
+    }
+
+    /// Há um `HH:MM:SS` na linha.
+    fn has_clock(l: &str) -> bool {
+        l.split_whitespace().any(|w| w.len() == 8 && w.bytes().enumerate().all(|(i, b)| if i % 3 == 2 { b == b':' } else { b.is_ascii_digit() }))
     }
 }

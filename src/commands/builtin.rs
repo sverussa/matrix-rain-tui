@@ -1,7 +1,8 @@
 //! Comandos embutidos. Cada um mapeia para uma `Action` existente.
 
 use super::Command;
-use crate::action::Action;
+use crate::action::{Action, ClockCmd};
+use crate::core::clock::{parse_duration, parse_hm, Mode};
 use crate::core::theme::THEMES;
 use crate::pages::{self, Ctx, PageId};
 
@@ -90,6 +91,60 @@ fn help(args: &[&str]) -> Result<Action, String> {
     }
 }
 
+fn clock_modes() -> Vec<String> {
+    Mode::ALL.iter().map(|m| m.name().to_string()).collect()
+}
+
+fn clock(args: &[&str]) -> Result<Action, String> {
+    let arg = args.join(" ").to_lowercase();
+    let mode = match arg.as_str() {
+        "" => Mode::Clock,
+        a => *Mode::ALL.iter().find(|m| m.name() == a || m.label().to_lowercase() == a).ok_or_else(|| format!("modo desconhecido: {a} ({})", clock_modes().join(", ")))?,
+    };
+    Ok(Action::Clock(ClockCmd::Show(mode)))
+}
+
+/// Subcomando sem argumento → abre o modo; senão, `sub` decide.
+fn clock_sub(args: &[&str], mode: Mode, sub: fn(&str) -> Option<ClockCmd>, usage: &str) -> Result<Action, String> {
+    match args.first() {
+        None => Ok(Action::Clock(ClockCmd::Show(mode))),
+        Some(a) => sub(&a.to_lowercase()).map(Action::Clock).ok_or_else(|| format!("uso: {usage}")),
+    }
+}
+
+fn timer(args: &[&str]) -> Result<Action, String> {
+    clock_sub(args, Mode::Timer, |a| match a {
+        "pause" | "start" => Some(ClockCmd::TimerToggle),
+        "reset" | "stop" => Some(ClockCmd::TimerReset),
+        d => parse_duration(d).map(ClockCmd::TimerStart),
+    }, "timer [5m|90s|1h30m|pause|reset]")
+}
+
+fn alarm(args: &[&str]) -> Result<Action, String> {
+    clock_sub(args, Mode::Alarm, |a| match a {
+        "off" => Some(ClockCmd::AlarmSet(None)),
+        hm => parse_hm(hm).map(|m| ClockCmd::AlarmSet(Some(m))),
+    }, "alarm [HH:MM|off]")
+}
+
+fn stopwatch(args: &[&str]) -> Result<Action, String> {
+    clock_sub(args, Mode::Stopwatch, |a| match a {
+        "start" | "pause" => Some(ClockCmd::StopwatchToggle),
+        "lap" => Some(ClockCmd::Lap),
+        "reset" => Some(ClockCmd::StopwatchReset),
+        _ => None,
+    }, "stopwatch [start|lap|reset]")
+}
+
+fn pomodoro(args: &[&str]) -> Result<Action, String> {
+    clock_sub(args, Mode::Pomodoro, |a| match a {
+        "start" | "pause" => Some(ClockCmd::PomoToggle),
+        "skip" => Some(ClockCmd::PomoSkip),
+        "reset" | "stop" => Some(ClockCmd::PomoReset),
+        _ => None,
+    }, "pomodoro [start|skip|reset]")
+}
+
 pub fn all() -> Vec<Box<dyn Command>> {
     vec![
         Box::new(Builtin { name: "theme", aliases: &[], help: "theme <n|nome>: troca o tema", complete: theme_names, run: theme }),
@@ -101,6 +156,11 @@ pub fn all() -> Vec<Box<dyn Command>> {
         simple("restart", &[], "reinicia a chuva", |_| Ok(Action::RestartRain)),
         Box::new(Builtin { name: "open", aliases: &[], help: "open <página>: abre uma página do console", complete: page_names, run: open }),
         Box::new(Builtin { name: "help", aliases: &["?"], help: "help [comando]: lista os comandos", complete: || super::registry().iter().map(|c| c.name().to_string()).collect(), run: help }),
+        Box::new(Builtin { name: "clock", aliases: &["relogio"], help: "clock [modo]: abre o RELÓGIO (relogio, timer, alarme, cronometro, pomodoro)", complete: clock_modes, run: clock }),
+        Box::new(Builtin { name: "timer", aliases: &[], help: "timer [5m|90s|1h30m|pause|reset]: inicia o timer", complete: || ["pause", "reset"].map(String::from).to_vec(), run: timer }),
+        Box::new(Builtin { name: "alarm", aliases: &["alarme"], help: "alarm [HH:MM|off]: liga o alarme (hora local)", complete: || vec!["off".into()], run: alarm }),
+        Box::new(Builtin { name: "stopwatch", aliases: &["sw"], help: "stopwatch [start|lap|reset]: cronômetro", complete: || ["start", "lap", "reset"].map(String::from).to_vec(), run: stopwatch }),
+        Box::new(Builtin { name: "pomodoro", aliases: &["pomo"], help: "pomodoro [start|skip|reset]: ciclos de foco e pausa", complete: || ["start", "skip", "reset"].map(String::from).to_vec(), run: pomodoro }),
         simple("clear", &[], "limpa a linha de mensagens", |_| Ok(Action::Feedback(String::new()))),
         simple("exit", &["quit", "q"], "abre a trava de saída", |_| Ok(Action::RequestExit)),
     ]

@@ -7,24 +7,29 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::Rect;
+use chrono::{Datelike, Timelike};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Widget};
+use ratatui::widgets::{Block, Clear, Widget};
 use ratatui::Frame;
+use ratcn::{Toast, ToasterState, ToasterWidget};
+use tachyonfx::{fx, Interpolation};
 
 use serde::{Deserialize, Serialize};
 
-use crate::action::Action;
+use crate::action::{Action, ClockCmd};
 use crate::commands;
 use crate::config;
+use crate::core::clock::{self, Clock, ClockCfg, Event as ClockEvent, SNOOZE};
 use crate::core::message::{Message, MESSAGES, MSG_EVERY, MSG_MINUTES};
 use crate::core::rain::{Field, Rng, CHARSET, DENSITY, TRAIL};
 use crate::core::theme::{Palette, THEMES};
-use crate::pages::{self, render_lines, Ctx, Page, PageId, CONFIG, CONFIG_ICON};
+use crate::pages::{self, render_lines, Ctx, Group, Page, PageId, TOP};
 use crate::sys::SysSnapshot;
 use crate::ui::footer::{self, Status};
+use crate::ui::kit::{big, big_width, Fx, ThemeCache, BIG_H};
 use crate::ui::lock::{LockKey, Unlock};
 use crate::ui::rain::{color, scaled, RainWidget};
 use crate::ui::shell;
@@ -48,6 +53,21 @@ const HISTORY: usize = 50;
 /// Duração da animação de abrir/fechar o console.
 const SHELL_ANIM: Duration = Duration::from_millis(250);
 
+/// `Ctx` das páginas, emprestando campo a campo (deixa `self.pages` livre para `&mut`).
+macro_rules! ctx {
+    ($s:ident, $focused:expr) => {
+        Ctx {
+            settings: &$s.settings,
+            log: &$s.log,
+            accent: color($s.palette.accent),
+            focused: $focused,
+            sys: $s.sys.as_ref(),
+            clock: &$s.clock,
+            motion: $s.motion(),
+        }
+    };
+}
+
 /// Configurações vivas (o que os menus editam). Persistidas em `config.toml`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -68,6 +88,8 @@ pub struct Settings {
     pub reduce_motion: bool,
     /// Texto do console sem atenuação e chuva de fundo mais escura.
     pub high_contrast: bool,
+    /// RELÓGIO: timer, alarme e pomodoro (`[clock]` no `config.toml`).
+    pub clock: ClockCfg,
 }
 
 impl Default for Settings {
@@ -83,6 +105,7 @@ impl Default for Settings {
             msg_minutes: MSG_EVERY.as_secs_f32() / 60.0,
             reduce_motion: false,
             high_contrast: false,
+            clock: ClockCfg::default(),
         }
     }
 }
@@ -141,8 +164,8 @@ pub struct App {
     /// Páginas da barra lateral (`pages::registry()`), e a selecionada.
     pub pages: Vec<Box<dyn Page>>,
     pub page: usize,
-    /// Barra lateral dentro do submenu CONFIG (nível 2). Fora dele: só CONFIG e SAIR.
-    pub in_config: bool,
+    /// Barra lateral dentro do submenu do grupo da página atual (nível 2). Fora dele: `TOP`.
+    pub submenu: bool,
     /// Texto da linha de comando.
     pub prompt: String,
     /// Comandos já executados (o mais recente no fim) e a posição ao navegar com ↑↓.
@@ -164,7 +187,17 @@ pub struct App {
     last_input: Instant,
     /// Mensagem escondida em andamento (no máximo uma por vez).
     msg: Option<Message>,
-    /// Duração da animação do console (testes zeram) e fração à mostra, 0..=1.
+    /// Estado vivo do RELÓGIO e o alarme tocando agora.
+    pub clock: Clock,
+    pub ringing: bool,
+    /// Avisos flutuantes (ratcn), com o relógio deles (`t0.elapsed()`).
+    pub toasts: ToasterState<'static>,
+    t0: Instant,
+    theme: ThemeCache,
+    /// Efeitos globais (tachyonfx): entrada de página, flash, alarme.
+    fx: Fx,
+    enter_fx: bool,
+    /// Duração da animação do console e fração à mostra, 0..=1. Zero (testes) desliga também os efeitos.
     pub anim: Duration,
     shell_p: f32,
     anim_at: Instant,
@@ -189,7 +222,7 @@ impl App {
             focus: Focus::Sidebar,
             pages: pages::registry(),
             page: 0,
-            in_config: false,
+            submenu: false,
             prompt: String::new(),
             history: Vec::new(),
             hist_pos: None,
@@ -204,6 +237,13 @@ impl App {
             paused: false,
             last_input: now,
             msg: None,
+            clock: Clock::default(),
+            ringing: false,
+            toasts: ToasterState::default(),
+            t0: now,
+            theme: ThemeCache::default(),
+            fx: Fx::default(),
+            enter_fx: false,
             anim: SHELL_ANIM,
             shell_p: 0.0,
             anim_at: now,
@@ -255,17 +295,229 @@ impl App {
         self.config = path;
     }
 
-    fn exit_page(&self) -> usize {
-        self.pages.iter().position(|p| p.id() == PageId::Exit).unwrap_or(0)
+    /// Animações e efeitos ligados (desligados com "Reduzir movimento" e nos testes).
+    fn motion(&self) -> bool {
+        !self.settings.reduce_motion && !self.anim.is_zero()
+    }
+
+    /// Grupo da página atual (`None` = SAIR).
+    fn group(&self) -> Option<Group> {
+        self.pages[self.page].group()
     }
 
     fn on_exit(&self) -> bool {
-        self.page == self.exit_page()
+        self.group().is_none()
     }
 
-    /// Índices das páginas do submenu CONFIG (todas menos SAIR), na ordem do registro.
-    fn config_pages(&self) -> Vec<usize> {
-        (0..self.pages.len()).filter(|&i| self.pages[i].id() != PageId::Exit).collect()
+    /// Índices das páginas de um grupo, na ordem do registro.
+    fn group_pages(&self, g: Option<Group>) -> Vec<usize> {
+        (0..self.pages.len()).filter(|&i| self.pages[i].group() == g).collect()
+    }
+
+    /// Posição da página atual no nível 1 (`TOP`).
+    fn top_index(&self) -> usize {
+        TOP.iter().position(|&g| g == self.group()).unwrap_or(0)
+    }
+
+    /// Nível 1: seleciona o item `i` de `TOP` (primeira página do grupo).
+    fn select_top(&mut self, i: usize) {
+        if let Some(&p) = self.group_pages(TOP[i % TOP.len()]).first() {
+            self.page = p;
+            self.enter_fx = true;
+        }
+    }
+
+    /// Enter no nível 1: abre o submenu ou, em SAIR, entra na página.
+    fn open_top(&mut self) {
+        if self.on_exit() {
+            self.focus = Focus::Page;
+        } else {
+            self.submenu = true;
+        }
+    }
+
+    fn toast(&mut self, text: String) {
+        self.log(text.clone());
+        self.toasts.push(Toast::info(text), self.t0.elapsed());
+    }
+
+    /// Muda a parte `clock` das configurações e salva na hora (o relógio não tem APLICAR).
+    fn persist_clock(&mut self, f: impl Fn(&mut ClockCfg)) {
+        for cfg in [&mut self.settings.clock, &mut self.applied.clock] {
+            f(cfg);
+            cfg.fit();
+        }
+        if let Some(p) = &self.config {
+            if let Err(e) = config::save(p, &self.applied) {
+                self.log(format!("erro ao salvar config: {e}"));
+            }
+        }
+    }
+
+    /// Efeito global, se as animações estiverem ligadas.
+    fn play(&mut self, key: &'static str, effect: tachyonfx::Effect) {
+        if self.motion() {
+            self.fx.play(key, effect);
+        }
+    }
+
+    fn clock_cmd(&mut self, cmd: ClockCmd, now: Instant) {
+        let c = &mut self.clock;
+        match cmd {
+            ClockCmd::Show(m) => {
+                c.mode = m;
+                if self.pages[self.page].id() != PageId::Clock || !matches!(self.mode, Mode::Console) {
+                    self.update(Action::Navigate(PageId::Clock), now);
+                }
+            }
+            ClockCmd::StopwatchToggle => c.stopwatch.toggle(now),
+            ClockCmd::StopwatchReset => {
+                c.stopwatch.reset();
+                c.laps.clear();
+            }
+            ClockCmd::Lap if c.stopwatch.running() => c.laps.push(c.stopwatch.elapsed(now)),
+            ClockCmd::Lap => {}
+            ClockCmd::TimerToggle => c.timer.toggle(now),
+            ClockCmd::TimerReset => c.timer.reset(),
+            ClockCmd::TimerStart(secs) => {
+                c.timer.reset();
+                c.timer.start(now);
+                self.persist_clock(|k| k.timer_secs = secs);
+                self.toast(format!("timer: {}", clock::fmt(Duration::from_secs(secs as u64), false)));
+            }
+            ClockCmd::TimerAdjust(d) => {
+                let secs = (self.settings.clock.timer_secs as i64 + d as i64).max(1) as u32;
+                self.persist_clock(|k| k.timer_secs = secs);
+            }
+            ClockCmd::AlarmSet(Some(m)) => {
+                self.persist_clock(|k| (k.alarm_min, k.alarm_on) = (m, true));
+                self.toast(format!("alarme às {:02}:{:02}", m / 60, m % 60));
+            }
+            ClockCmd::AlarmSet(None) => {
+                self.persist_clock(|k| k.alarm_on = false);
+                self.clock.snooze = None;
+                self.toast("alarme desligado".into());
+            }
+            ClockCmd::AlarmToggle => {
+                let on = !self.settings.clock.alarm_on;
+                self.persist_clock(|k| k.alarm_on = on);
+            }
+            ClockCmd::Dismiss => {
+                self.ringing = false;
+                self.fx.cancel("ring");
+            }
+            ClockCmd::Snooze => {
+                self.ringing = false;
+                self.fx.cancel("ring");
+                self.clock.snooze = Some(now + SNOOZE);
+                self.toast("alarme adiado 5 min".into());
+            }
+            ClockCmd::PomoToggle => c.pomo.toggle(now),
+            ClockCmd::PomoReset => c.reset_pomodoro(),
+            ClockCmd::PomoSkip => {
+                let p = c.next_phase(now);
+                self.toast(format!("pomodoro: {}", p.label()));
+            }
+            ClockCmd::PomoLen(phase, min) => self.persist_clock(|k| match phase {
+                clock::Phase::Focus => k.pomo_focus = min,
+                clock::Phase::Short => k.pomo_short = min,
+                clock::Phase::Long => k.pomo_long = min,
+            }),
+        }
+    }
+
+    fn on_clock_event(&mut self, ev: ClockEvent) {
+        let flash = || fx::ping_pong(fx::lighten_fg(0.6, (300, Interpolation::QuadOut)));
+        match ev {
+            ClockEvent::TimerDone => {
+                self.toast("⏱ timer terminou".into());
+                self.play("flash", flash());
+            }
+            ClockEvent::Pomodoro(p) => {
+                self.toast(format!("pomodoro: {}", p.label()));
+                self.play("flash", flash());
+            }
+            ClockEvent::Alarm => {
+                let m = self.settings.clock.alarm_min;
+                self.toast(format!("⏰ alarme {:02}:{:02}", m / 60, m % 60));
+                self.ringing = true;
+                let ring = fx::repeating(fx::ping_pong(fx::fade_to_fg(Color::White, (400, Interpolation::SineInOut))));
+                let area = ring_box(Rect::new(0, 0, self.term.0, self.term.1));
+                self.play("ring", ring.with_area(area));
+            }
+        }
+    }
+
+    /// Mouse: clique abre o console no Idle; no console, barra lateral, página e prompt.
+    pub fn on_mouse(&mut self, ev: MouseEvent, now: Instant) {
+        let click = matches!(ev.kind, MouseEventKind::Down(MouseButton::Left));
+        if !matches!(ev.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
+            self.last_input = now;
+        }
+        if self.ringing && !matches!(self.mode, Mode::Lock { .. }) {
+            if click {
+                self.update(Action::Clock(ClockCmd::Dismiss), now);
+            }
+            return;
+        }
+        match self.mode {
+            Mode::Idle if click => self.update(Action::OpenConsole, now),
+            Mode::Console => self.console_mouse(ev, click, now),
+            _ => {}
+        }
+    }
+
+    fn console_mouse(&mut self, ev: MouseEvent, click: bool, now: Instant) {
+        let full = Rect::new(0, 0, self.term.0, self.term.1);
+        if full.width < MIN_W || full.height < MIN_H {
+            return;
+        }
+        let r = shell::layout(full);
+        let pos = Position::new(ev.column, ev.row);
+        let wheel = match ev.kind {
+            MouseEventKind::ScrollUp => Some(KeyCode::Up),
+            MouseEventKind::ScrollDown => Some(KeyCode::Down),
+            _ => None,
+        };
+        if r.sidebar.contains(pos) {
+            if let Some(code) = wheel {
+                self.focus = Focus::Sidebar;
+                self.on_key(KeyEvent::from(code), now);
+            } else if click {
+                self.focus = Focus::Sidebar;
+                let row = (ev.row - r.sidebar.y) as usize;
+                if !self.submenu {
+                    if row < TOP.len() {
+                        self.select_top(row);
+                        self.open_top();
+                    }
+                } else if row == 0 {
+                    self.update(Action::Back, now); // `‹ GRUPO`
+                } else if let Some(&i) = self.group_pages(self.group()).get(row - 1) {
+                    self.update(Action::Navigate(self.pages[i].id()), now);
+                    self.focus = Focus::Page;
+                }
+            }
+        } else if r.workspace.contains(pos) {
+            if !self.submenu && !self.on_exit() {
+                // Prévia do grupo no nível 1: clique numa linha abre aquela página.
+                let row = ev.row.saturating_sub(r.workspace.y + 1) as usize;
+                if let Some(&i) = self.group_pages(self.group()).get(row).filter(|_| click && ev.row > r.workspace.y) {
+                    self.update(Action::Navigate(self.pages[i].id()), now);
+                    self.focus = Focus::Page;
+                }
+                return;
+            }
+            if click {
+                self.focus = Focus::Page;
+            }
+            let ctx = ctx!(self, self.focus == Focus::Page);
+            if let Some(a) = self.pages[self.page].on_mouse(ev, r.workspace, &ctx) {
+                self.update(a, now);
+            }
+        } else if r.prompt.contains(pos) && click {
+            self.focus = Focus::Prompt;
+        }
     }
 
     /// O shell está na tela (console, ou trava aberta a partir dele).
@@ -311,6 +563,12 @@ impl App {
         if !self.paused {
             self.field.update(dt, self.settings.speed, &mut self.rng);
         }
+        let local = chrono::Local::now();
+        let day_min = (local.num_days_from_ce(), (local.hour() * 60 + local.minute()) as u16);
+        for ev in self.clock.tick(now, day_min, &self.settings.clock) {
+            self.on_clock_event(ev);
+        }
+        self.toasts.prune_expired(self.t0.elapsed());
         // Mensagens só no Idle: no console a área central está ocupada.
         if !self.shell_visible() {
             self.tick_message(now); // depois da chuva: usa os rastros deste frame
@@ -326,6 +584,18 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent, now: Instant) -> bool {
         self.last_input = now;
         let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
+        // Alarme tocando: `s` adia, Enter/Esc/Espaço desligam; o resto espera.
+        if self.ringing && !matches!(self.mode, Mode::Lock { .. }) && !ctrl_c {
+            let cmd = match key.code {
+                KeyCode::Char('s') | KeyCode::Char('S') => Some(ClockCmd::Snooze),
+                KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ') => Some(ClockCmd::Dismiss),
+                _ => None,
+            };
+            if let Some(cmd) = cmd {
+                self.update(Action::Clock(cmd), now);
+            }
+            return false;
+        }
         let action = match &mut self.mode {
             // Trava aberta: as teclas vão para o código, nada mais reage.
             Mode::Lock { unlock, .. } => match unlock.key(key.code, now) {
@@ -368,11 +638,21 @@ impl App {
 
     /// Teclas do console, conforme o foco. Editar o prompt e mover o foco é estado local.
     fn console_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let page = &self.pages[self.page];
+        let to_page = match key.code {
+            KeyCode::Esc => page.modal(),
+            KeyCode::Char(':') => page.typing(),
+            _ => false,
+        };
         match (self.focus, key.code) {
+            (Focus::Page, _) if to_page => {
+                let ctx = ctx!(self, true);
+                self.pages[self.page].on_key(key, &ctx)
+            }
             (_, KeyCode::Esc) => Some(Action::Back),
             (Focus::Prompt, KeyCode::Enter) => Some(Action::RunCommand(self.prompt.clone())),
             (Focus::Prompt, KeyCode::Tab) => {
-                let ctx = Ctx { settings: &self.settings, log: &self.log, accent: color(self.palette.accent), focused: false, sys: self.sys.as_ref() };
+                let ctx = ctx!(self, false);
                 let (line, options) = commands::complete(&self.prompt, &ctx);
                 self.prompt = line;
                 if !options.is_empty() {
@@ -401,29 +681,30 @@ impl App {
             }
             (Focus::Prompt, _) => None,
             (_, KeyCode::Char(':')) => Some(Action::OpenPrompt),
-            (Focus::Sidebar, KeyCode::Up | KeyCode::Down) if self.in_config => {
-                let cfg = self.config_pages();
-                let (m, pos) = (cfg.len(), cfg.iter().position(|&i| i == self.page).unwrap_or(0));
+            (Focus::Sidebar, KeyCode::Up | KeyCode::Down) if self.submenu => {
+                let pages = self.group_pages(self.group());
+                let (m, pos) = (pages.len(), pages.iter().position(|&i| i == self.page).unwrap_or(0));
                 let next = if key.code == KeyCode::Up { (pos + m - 1) % m } else { (pos + 1) % m };
-                Some(Action::Navigate(self.pages[cfg[next]].id()))
+                Some(Action::Navigate(self.pages[pages[next]].id()))
             }
-            // Nível 1: só dois itens, ↑↓ alternam entre CONFIG e SAIR.
+            // Nível 1: ↑↓ percorrem `TOP` (AÇÕES, CONFIG, SAIR).
             (Focus::Sidebar, KeyCode::Up | KeyCode::Down) => {
-                self.page = if self.on_exit() { self.config_pages()[0] } else { self.exit_page() };
+                let (n, i) = (TOP.len(), self.top_index());
+                self.select_top(if key.code == KeyCode::Up { i + n - 1 } else { i + 1 });
                 None
             }
-            (Focus::Sidebar, KeyCode::Left) if self.in_config => Some(Action::Back),
+            (Focus::Sidebar, KeyCode::Left) if self.submenu => Some(Action::Back),
             (Focus::Sidebar, KeyCode::Enter | KeyCode::Right | KeyCode::Tab) => {
-                if self.in_config || self.on_exit() {
+                if self.submenu {
                     self.focus = Focus::Page;
                 } else {
-                    self.in_config = true;
+                    self.open_top();
                 }
                 None
             }
             (Focus::Sidebar, _) => None,
             (Focus::Page, _) => {
-                let ctx = Ctx { settings: &self.settings, log: &self.log, accent: color(self.palette.accent), focused: true, sys: self.sys.as_ref() };
+                let ctx = ctx!(self, true);
                 self.pages[self.page].on_key(key, &ctx)
             }
         }
@@ -446,7 +727,7 @@ impl App {
                 self.snapshot_on_open();
                 self.mode = Mode::Console;
                 self.focus = Focus::Sidebar;
-                self.in_config = false;
+                self.submenu = false;
             }
             Action::OpenPrompt => {
                 self.snapshot_on_open();
@@ -455,8 +736,9 @@ impl App {
             }
             Action::Navigate(id) => {
                 if let Some(i) = self.pages.iter().position(|p| p.id() == id) {
+                    self.enter_fx |= i != self.page;
                     self.page = i;
-                    self.in_config = id != PageId::Exit;
+                    self.submenu = self.pages[i].group().is_some();
                     self.mode = Mode::Console;
                 }
             }
@@ -468,7 +750,7 @@ impl App {
                     self.focus = Focus::Sidebar;
                 }
                 (Mode::Console, Focus::Page) => self.focus = Focus::Sidebar,
-                (Mode::Console, Focus::Sidebar) if self.in_config => self.in_config = false,
+                (Mode::Console, Focus::Sidebar) if self.submenu => self.submenu = false,
                 (Mode::Console, Focus::Sidebar) => self.mode = Mode::Idle,
                 (Mode::Lock { from_console: true, .. }, _) => self.mode = Mode::Console,
                 (Mode::Lock { .. } | Mode::Idle, _) => self.mode = Mode::Idle,
@@ -485,7 +767,7 @@ impl App {
                     }
                     self.history.push(line.to_string());
                 }
-                let ctx = Ctx { settings: &self.settings, log: &self.log, accent: color(self.palette.accent), focused: false, sys: self.sys.as_ref() };
+                let ctx = ctx!(self, false);
                 match commands::run(line, &ctx) {
                     Ok(Some(next)) => self.update(next, now),
                     Ok(None) => {}
@@ -493,6 +775,8 @@ impl App {
                 }
             }
             Action::Feedback(text) => self.feedback = text,
+            Action::Toast(text) => self.toast(text),
+            Action::Clock(cmd) => self.clock_cmd(cmd, now),
             Action::RequestExit => {
                 let from_console = matches!(self.mode, Mode::Console);
                 self.mode = Mode::Lock { unlock: Unlock::new(now), from_console };
@@ -533,6 +817,7 @@ impl App {
         new.trail = fit(new.trail, TRAIL);
         new.density = fit(new.density, DENSITY);
         new.msg_minutes = fit(new.msg_minutes, MSG_MINUTES);
+        new.clock.fit();
         let old = std::mem::replace(&mut self.settings, new);
         let s = self.settings.clone();
         if old.theme != s.theme {
@@ -621,9 +906,32 @@ impl App {
             }
         }
 
+        // Avisos e alarme valem no Idle e no console; os efeitos vêm por cima de tudo, menos da trava.
+        let theme = self.theme.get(accent);
+        ToasterWidget::new(&self.toasts, self.t0.elapsed()).themed(theme).render(full, buf);
+        if self.ringing {
+            self.draw_ring(full, buf, accent);
+        }
+        self.fx.process(buf, full);
+
         if let Mode::Lock { unlock, .. } = &self.mode {
             unlock.render(full, buf, accent, &mut self.rng, Instant::now());
         }
+    }
+
+    /// Caixa do alarme tocando, com a hora em dígitos grandes.
+    fn draw_ring(&self, full: Rect, buf: &mut ratatui::buffer::Buffer, accent: Color) {
+        let r = ring_box(full);
+        let m = self.settings.clock.alarm_min;
+        let hm = format!("{:02}:{:02}", m / 60, m % 60);
+        Clear.render(r, buf);
+        Block::bordered()
+            .title(Line::styled(" ALARME ", Style::new().fg(accent).add_modifier(Modifier::BOLD)))
+            .title_bottom(Line::from(" Enter desliga · s adia 5 min ").centered())
+            .border_style(Style::new().fg(accent))
+            .render(r, buf);
+        let x = r.x + r.width.saturating_sub(big_width(&hm)) / 2;
+        big(buf, x, r.y + 2, &hm, Style::new().fg(accent).add_modifier(Modifier::BOLD), r);
     }
 
     fn draw_shell(&mut self, full: Rect, buf: &mut ratatui::buffer::Buffer) {
@@ -637,38 +945,46 @@ impl App {
         }
 
         let r = shell::layout(full);
+        // O RELÓGIO tem a própria entrada (cortina de chuva que se dissolve).
+        if std::mem::take(&mut self.enter_fx) && self.pages[self.page].id() != PageId::Clock {
+            self.play("enter", fx::coalesce((300, Interpolation::QuadOut)).with_area(r.workspace));
+        }
         let hints = match self.focus {
-            Focus::Sidebar if self.in_config => shell::CONFIG_HINTS,
+            Focus::Sidebar if self.submenu => shell::CONFIG_HINTS,
             Focus::Sidebar => shell::SIDEBAR_HINTS,
             Focus::Page => self.pages[self.page].hints(),
             Focus::Prompt => shell::PROMPT_HINTS,
         };
         let dirty = if self.settings != self.applied { "  ● alterações" } else { "" };
         let title = self.pages[self.page].title();
-        let path = match (self.in_config, self.on_exit()) {
-            (true, _) => format!("{CONFIG} › {title}"),
-            (false, true) => title.to_string(),
-            (false, false) => CONFIG.to_string(),
+        let path = match (self.submenu, self.group()) {
+            (true, Some(g)) => format!("{} › {title}", g.title()),
+            (false, Some(g)) => g.title().to_string(),
+            (_, None) => title.to_string(),
         };
         let crumb = format!("CONSOLE › {path}{dirty}");
         shell::frame(&r, buf, &crumb, footer::hints(hints, accent, dim), accent, dim);
-        let cfg = self.config_pages();
+        let group = self.group_pages(self.group());
         let sidebar_focus = self.focus == Focus::Sidebar;
-        if self.in_config {
-            let rows: Vec<_> = cfg.iter().map(|&i| (self.pages[i].icon(), self.pages[i].title())).collect();
-            let sel = cfg.iter().position(|&i| i == self.page).unwrap_or(0);
-            shell::sidebar(r.sidebar, buf, Some(CONFIG), &rows, sel, sidebar_focus, accent);
+        if self.submenu {
+            let rows: Vec<_> = group.iter().map(|&i| (self.pages[i].icon(), self.pages[i].title())).collect();
+            let sel = group.iter().position(|&i| i == self.page).unwrap_or(0);
+            let header = self.group().map(Group::title);
+            shell::sidebar(r.sidebar, buf, header, &rows, sel, sidebar_focus, accent);
         } else {
-            let exit = &self.pages[self.exit_page()];
-            let rows = [(CONFIG_ICON, CONFIG), (exit.icon(), exit.title())];
-            shell::sidebar(r.sidebar, buf, None, &rows, self.on_exit() as usize, sidebar_focus, accent);
+            let exit = &self.pages[self.group_pages(None)[0]];
+            let rows: Vec<_> = TOP
+                .iter()
+                .map(|g| g.map_or((exit.icon(), exit.title()), |g| (g.icon(), g.title())))
+                .collect();
+            shell::sidebar(r.sidebar, buf, None, &rows, self.top_index(), sidebar_focus, accent);
         }
-        if !self.in_config && !self.on_exit() {
-            // Nível 1 com CONFIG selecionado: prévia das seções.
-            let lines = cfg.iter().map(|&i| format!("{}  {}", self.pages[i].icon(), self.pages[i].title()));
+        if !self.submenu && !self.on_exit() {
+            // Nível 1 com um grupo selecionado: prévia das seções.
+            let lines = group.iter().map(|&i| format!("{}  {}", self.pages[i].icon(), self.pages[i].title()));
             render_lines(r.workspace, buf, lines, accent);
         } else {
-            let ctx = Ctx { settings: &self.settings, log: &self.log, accent, focused: self.focus == Focus::Page, sys: self.sys.as_ref() };
+            let ctx = ctx!(self, self.focus == Focus::Page);
             self.pages[self.page].render(r.workspace, buf, &ctx);
         }
         if !self.feedback.is_empty() {
@@ -678,6 +994,12 @@ impl App {
         shell::prompt(r.prompt, buf, &self.prompt, self.focus == Focus::Prompt, accent, dim);
         footer::render(r.footer, buf, &Status { fps: self.fps, sys: self.sys.as_ref() }, dim);
     }
+}
+
+/// Caixa do alarme tocando, centralizada.
+fn ring_box(full: Rect) -> Rect {
+    let (w, h) = ((big_width("00:00") + 8).min(full.width), (BIG_H + 4).min(full.height));
+    Rect::new(full.x + (full.width - w) / 2, full.y + (full.height - h) / 2, w, h)
 }
 
 #[cfg(test)]
@@ -696,6 +1018,13 @@ mod tests {
 
     fn k(app: &mut App, code: KeyCode) -> bool {
         key(app, code, KeyModifiers::NONE)
+    }
+
+    /// Abre o console e entra no submenu CONFIG (primeira página: VÍDEO).
+    fn open_config(app: &mut App) {
+        k(app, KeyCode::Enter);
+        k(app, KeyCode::Down);
+        k(app, KeyCode::Enter);
     }
 
     fn press(app: &mut App, s: &str) -> bool {
@@ -746,7 +1075,9 @@ mod tests {
         app.mode = Mode::Idle; // inverte no meio sem saltar
         assert_eq!(app.shell_progress(t0 + SHELL_ANIM * 3 / 4), 0.25);
         assert_eq!(app.shell_progress(t0 + SHELL_ANIM * 2), 0.0);
-        app.settings.reduce_motion = true; // sem animação
+        assert!(app.motion());
+        app.settings.reduce_motion = true; // sem animação nem efeitos
+        assert!(!app.motion());
         app.mode = Mode::Console;
         assert_eq!(app.shell_progress(t0 + SHELL_ANIM * 2), 1.0);
     }
@@ -784,10 +1115,9 @@ mod tests {
     fn console_layout_sizes() {
         for (w, h) in [(60, 20), (80, 24), (160, 48)] {
             let mut app = App::new(w, h, Rng::new(1));
-            k(&mut app, KeyCode::Enter);
-            k(&mut app, KeyCode::Enter); // entra em CONFIG
+            open_config(&mut app);
             let s = screen(&mut app, w, h);
-            for text in ["MATRIX//OS", "CONSOLE › CONFIG › VÍDEO", "TEMA", "◂ MATRIX ▸", " > ", "fps", "UTC"] {
+            for text in ["MATRIX//OS", "CONSOLE › CONFIG › VÍDEO", "TEMA", "◂ MATRIX ▸", " > ", "fps"] {
                 assert!(s.contains(text), "{w}x{h}: falta {text:?}\n{s}");
             }
             // Barra lateral: nomes inteiros só a partir de 100 colunas; senão, iniciais.
@@ -803,18 +1133,24 @@ mod tests {
     fn sidebar_navigation_and_exit_page() {
         let mut app = App::new(160, 48, Rng::new(1));
         k(&mut app, KeyCode::Enter);
-        // Nível 1: só CONFIG e SAIR; CONFIG mostra a prévia das seções.
+        // Nível 1: AÇÕES, CONFIG e SAIR; o grupo selecionado mostra a prévia das seções.
+        let s = screen(&mut app, 160, 48);
+        assert!(s.contains("CONSOLE › AÇÕES") && s.contains("▸ AÇÕES") && s.contains("ﾄ  RELÓGIO"), "{s}");
+        k(&mut app, KeyCode::Down);
         let s = screen(&mut app, 160, 48);
         assert!(s.contains("CONSOLE › CONFIG") && s.contains("▸ CONFIG") && s.contains("ｴ  VÍDEO"), "{s}");
         assert!(!s.contains("▸ VÍDEO"), "{s}"); // subitens só no nível 2
-        k(&mut app, KeyCode::Up);
+        k(&mut app, KeyCode::Down);
         assert_eq!(app.pages[app.page].id(), PageId::Exit);
         assert!(screen(&mut app, 160, 48).contains("CONSOLE › SAIR"));
-        k(&mut app, KeyCode::Down); // volta a CONFIG
+        k(&mut app, KeyCode::Down); // dá a volta: AÇÕES
+        assert_eq!(app.pages[app.page].id(), PageId::Showcase);
+        k(&mut app, KeyCode::Up);
+        k(&mut app, KeyCode::Up); // CONFIG
 
         // Nível 2: subitens sem SAIR; ↑ dá a volta até LOG; Esc e ← voltam ao nível 1.
         k(&mut app, KeyCode::Enter);
-        assert!(app.in_config && app.focus == Focus::Sidebar);
+        assert!(app.submenu && app.focus == Focus::Sidebar);
         let s = screen(&mut app, 160, 48);
         assert!(s.contains("‹ CONFIG") && s.contains("CONSOLE › CONFIG › VÍDEO") && !s.contains("SAIR"), "{s}");
         k(&mut app, KeyCode::Up);
@@ -822,10 +1158,10 @@ mod tests {
         k(&mut app, KeyCode::Down);
         assert_eq!(app.pages[app.page].id(), PageId::Video);
         k(&mut app, KeyCode::Esc);
-        assert!(!app.in_config && matches!(app.mode, Mode::Console));
+        assert!(!app.submenu && matches!(app.mode, Mode::Console));
         k(&mut app, KeyCode::Right);
         k(&mut app, KeyCode::Left);
-        assert!(!app.in_config);
+        assert!(!app.submenu);
         k(&mut app, KeyCode::Down);
         assert_eq!(app.pages[app.page].id(), PageId::Exit);
 
@@ -846,8 +1182,7 @@ mod tests {
     #[test]
     fn video_page_changes_live_state() {
         let mut app = App::new(160, 48, Rng::new(1));
-        k(&mut app, KeyCode::Enter);
-        k(&mut app, KeyCode::Enter); // CONFIG
+        open_config(&mut app);
         k(&mut app, KeyCode::Enter); // foco na página VÍDEO
         k(&mut app, KeyCode::Right); // TEMA ▸
         assert_eq!(app.settings.theme, 1);
@@ -870,8 +1205,7 @@ mod tests {
     #[test]
     fn new_pages_navigation_and_effects() {
         let mut app = App::new(160, 48, Rng::new(1));
-        k(&mut app, KeyCode::Enter);
-        k(&mut app, KeyCode::Enter); // CONFIG
+        open_config(&mut app);
         let expect = [
             (PageId::Rain, "CHUVA", "RASTRO"),
             (PageId::Messages, "MENSAGENS", "INTERVALO min"),
@@ -925,8 +1259,7 @@ mod tests {
         app.load_config(Some(file.clone())); // ausente → padrões
         assert_eq!(app.settings, Settings::default());
 
-        k(&mut app, KeyCode::Enter);
-        k(&mut app, KeyCode::Enter); // CONFIG
+        open_config(&mut app);
         k(&mut app, KeyCode::Enter); // VÍDEO
         k(&mut app, KeyCode::Right); // tema 1, ao vivo
         assert_eq!(app.settings.theme, 1);
@@ -1107,6 +1440,165 @@ mod tests {
         assert!(CHARSET.iter().all(|&c| !('\u{1100}'..='\u{FF60}').contains(&c)));
     }
 
+    /// Posição (coluna, linha) da primeira ocorrência de `text` na tela.
+    fn find(app: &mut App, w: u16, h: u16, text: &str) -> (u16, u16) {
+        let s = screen(app, w, h);
+        for (y, line) in s.lines().enumerate() {
+            if let Some(b) = line.find(text) {
+                return (line[..b].chars().count() as u16, y as u16);
+            }
+        }
+        panic!("{text:?} não está na tela\n{s}");
+    }
+
+    fn mouse(app: &mut App, kind: MouseEventKind, (column, row): (u16, u16)) {
+        app.on_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }, Instant::now());
+    }
+
+    /// Clique = botão desce e sobe no mesmo lugar.
+    fn click(app: &mut App, at: (u16, u16)) {
+        mouse(app, MouseEventKind::Down(MouseButton::Left), at);
+        mouse(app, MouseEventKind::Up(MouseButton::Left), at);
+    }
+
+    /// Clica no texto que está na tela agora (renderiza antes, como o loop real).
+    fn click_text(app: &mut App, text: &str) {
+        let at = find(app, 100, 30, text);
+        click(app, (at.0 + 1, at.1));
+    }
+
+    #[test]
+    fn mouse_sidebar_and_settings_page() {
+        let mut app = App::new(100, 30, Rng::new(1));
+        click(&mut app, (50, 10)); // Idle: clique abre o console
+        assert!(matches!(app.mode, Mode::Console));
+        click_text(&mut app, "CONFIG"); // nível 1 → submenu
+        assert!(app.submenu && app.group() == Some(Group::Config));
+        click_text(&mut app, "▸ VÍDEO");
+        assert_eq!((app.pages[app.page].id(), app.focus), (PageId::Video, Focus::Page));
+        click_text(&mut app, "HUD"); // toggle por clique
+        assert!(app.settings.hud);
+        let tema = find(&mut app, 100, 30, "TEMA");
+        click(&mut app, (99 - 10, tema.1)); // metade direita da escolha: próximo tema
+        assert_eq!(app.settings.theme, 1);
+        // Roda na barra lateral percorre as seções; `‹ CONFIG` volta ao nível 1.
+        let at = find(&mut app, 100, 30, "▸ VÍDEO");
+        mouse(&mut app, MouseEventKind::ScrollDown, at);
+        assert_eq!(app.pages[app.page].id(), PageId::Rain);
+        click_text(&mut app, "‹ CONFIG");
+        assert!(!app.submenu);
+        click_text(&mut app, "SAIR");
+        assert_eq!(app.focus, Focus::Page);
+        click_text(&mut app, "> :"); // prompt
+        assert_eq!(app.focus, Focus::Prompt);
+    }
+
+    #[test]
+    fn clock_page_by_mouse_and_keys() {
+        let mut app = App::new(100, 30, Rng::new(1));
+        k(&mut app, KeyCode::Enter);
+        click_text(&mut app, "AÇÕES");
+        click_text(&mut app, "RELÓGIO");
+        assert_eq!(app.pages[app.page].id(), PageId::Clock);
+        assert!(screen(&mut app, 100, 30).contains("de 20")); // data por extenso
+        click_text(&mut app, "TIMER");
+        assert_eq!(app.clock.mode, clock::Mode::Timer);
+        click_text(&mut app, "INICIAR");
+        assert!(app.clock.timer.running());
+        assert!(screen(&mut app, 100, 30).contains("PAUSAR"));
+        click_text(&mut app, "+1 MIN");
+        assert_eq!(app.settings.clock.timer_secs, 360);
+        click_text(&mut app, "ZERAR");
+        assert!(!app.clock.timer.running());
+        // Teclado: com foco nas abas, → troca de modo direto.
+        k(&mut app, KeyCode::Esc);
+        k(&mut app, KeyCode::Enter); // foco de volta na página
+        app.update(Action::Clock(ClockCmd::Show(clock::Mode::Alarm)), Instant::now());
+        screen(&mut app, 100, 30);
+        // Campo de hora: `:` vai para o campo, não abre o prompt; Enter liga o alarme.
+        click_text(&mut app, "nova hora");
+        press(&mut app, "06:45");
+        assert_eq!(app.focus, Focus::Page);
+        k(&mut app, KeyCode::Enter);
+        assert_eq!((app.settings.clock.alarm_on, app.settings.clock.alarm_min), (true, 405));
+        assert!(screen(&mut app, 100, 30).contains("toca às 06:45"));
+        click_text(&mut app, "ALARME LIGADO");
+        assert!(!app.settings.clock.alarm_on);
+        // Cronômetro: voltas aparecem na lista.
+        app.update(Action::Clock(ClockCmd::Show(clock::Mode::Stopwatch)), Instant::now());
+        app.update(Action::Clock(ClockCmd::StopwatchToggle), Instant::now());
+        click_text(&mut app, "VOLTA");
+        assert!(screen(&mut app, 100, 30).contains("#1"));
+        // Pomodoro: o Cycle de duração muda a config.
+        app.update(Action::Clock(ClockCmd::Show(clock::Mode::Pomodoro)), Instant::now());
+        click_text(&mut app, "FOCO 25m");
+        assert_eq!(app.settings.clock.pomo_focus, 30);
+    }
+
+    #[test]
+    fn showcase_components_by_mouse() {
+        let mut app = App::new(100, 30, Rng::new(1));
+        app.update(Action::Navigate(PageId::Showcase), Instant::now());
+        app.focus = Focus::Page;
+        click_text(&mut app, "TOAST");
+        assert!(screen(&mut app, 100, 30).contains("olá do ratcn"));
+        click_text(&mut app, "CLIQUES 0");
+        assert!(screen(&mut app, 100, 30).contains("CLIQUES 1"));
+        click_text(&mut app, "OPÇÃO A");
+        let s = screen(&mut app, 100, 30);
+        assert!(s.contains("■ OPÇÃO A") && s.contains("□ OPÇÃO B"), "{s}");
+        click_text(&mut app, "AMBER CRT"); // lista de temas aplica o tema
+        assert_eq!(app.settings.theme, 2);
+        // Campo de texto aceita `:` e Enter vira toast.
+        click_text(&mut app, "digite e Enter");
+        press(&mut app, "a:b");
+        k(&mut app, KeyCode::Enter);
+        assert!(screen(&mut app, 100, 30).contains("você digitou: a:b"));
+        // Diálogo modal: Esc fecha o diálogo, não a página.
+        click_text(&mut app, "DIÁLOGO");
+        assert!(app.pages[app.page].modal() && screen(&mut app, 100, 30).contains("Diálogo do ratcn"));
+        k(&mut app, KeyCode::Esc);
+        assert!(!app.pages[app.page].modal() && app.focus == Focus::Page);
+        assert!(screen(&mut app, 100, 30).contains("cancelado"));
+        // Aba EFEITOS: lista dos efeitos; escolher um não quebra o render.
+        click_text(&mut app, "EFEITOS");
+        assert!(screen(&mut app, 100, 30).contains("COALESCE"));
+        app.anim = SHELL_ANIM; // efeitos ligados
+        click_text(&mut app, "GLITCH");
+        for _ in 0..3 {
+            screen(&mut app, 100, 30);
+        }
+    }
+
+    #[test]
+    fn alarm_rings_snoozes_and_dismisses() {
+        let dir = std::env::temp_dir().join(format!("matrix-rain-alarm-{}", std::process::id()));
+        let file = dir.join("config.toml");
+        let mut app = App::new(80, 24, Rng::new(1));
+        app.load_config(Some(file.clone()));
+        let now_min = { let l = chrono::Local::now(); (l.hour() * 60 + l.minute()) as u16 };
+        app.update(Action::RunCommand(format!("alarm {:02}:{:02}", now_min / 60, now_min % 60)), Instant::now());
+        assert!(std::fs::read_to_string(&file).unwrap().contains(&format!("alarm_min = {now_min}")));
+        app.update(Action::Back, Instant::now()); // volta ao Idle: o alarme toca mesmo assim
+        app.update(Action::Back, Instant::now());
+        app.tick(0.0, Instant::now());
+        assert!(app.ringing);
+        assert!(screen(&mut app, 80, 24).contains("Enter desliga"));
+        k(&mut app, KeyCode::Char('x')); // outras teclas esperam
+        assert!(app.ringing);
+        k(&mut app, KeyCode::Char('s'));
+        assert!(!app.ringing && app.clock.snooze.is_some());
+        app.tick(0.0, Instant::now() + SNOOZE);
+        assert!(app.ringing);
+        k(&mut app, KeyCode::Enter);
+        assert!(!app.ringing && matches!(app.mode, Mode::Idle)); // Enter só desligou
+        // Timer que termina vira toast (no Idle também).
+        app.update(Action::Clock(ClockCmd::TimerStart(1)), Instant::now());
+        app.tick(0.0, Instant::now() + Duration::from_secs(2));
+        assert!(screen(&mut app, 80, 24).contains("timer terminou"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Mede o tempo de render (widget + diff + escapes) em 240×70.
     /// `cargo test --release -- --ignored --nocapture render_240x70`
     #[test]
@@ -1122,9 +1614,14 @@ mod tests {
         let viewport = Viewport::Fixed(Rect::new(0, 0, 240, 70));
         let mut real = Terminal::with_options(CrosstermBackend::new(std::io::sink()), TerminalOptions { viewport }).unwrap();
 
-        for mode in ["idle", "console"] {
+        for mode in ["idle", "console", "clock+fx"] {
             if mode == "console" {
                 k(&mut app, KeyCode::Enter);
+            }
+            if mode == "clock+fx" {
+                // Pior caso: ratcn + dígitos mudando a cada frame + efeitos (coalesce por dígito).
+                app.update(Action::Clock(ClockCmd::Show(clock::Mode::Stopwatch)), Instant::now());
+                app.update(Action::Clock(ClockCmd::StopwatchToggle), Instant::now());
             }
             let t = Instant::now();
             for _ in 0..n {
