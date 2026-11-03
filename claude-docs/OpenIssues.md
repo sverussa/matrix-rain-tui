@@ -21,14 +21,15 @@ Estado em 2026-11-02, branch `mark-01` (merge final `0c52198`). Plano original: 
 | D13 | Tick desktop a 60 Hz com `ControlFlow::WaitUntil`, sem depender de vsync | Com `AutoVsync` o spike travou em 30 FPS | — |
 | D14 | `make lint` agora roda `cargo clippy --all-features` | Cobrir `desktop.rs` | Voltar para `cargo clippy` se o tempo de compilação do wgpu incomodar |
 | D15 | `cargo fmt` não foi aplicado | O código original não seguia rustfmt; formatar misturaria diffs | Rodar `cargo fmt` num commit separado |
+| D16 | Barra lateral em dois níveis: CONFIG (ｾ) e SAIR no topo; Enter em CONFIG abre o submenu com as demais páginas (`‹ CONFIG`), Esc/← volta | Pedido do usuário: tudo menos SAIR dentro de CONFIG | `App::in_config`; voltar ao menu plano removendo o nível 1 em `console_key`/`draw_shell` |
 
 ## Ficou de fora
 
 ### Console / UX
-- [ ] Animação de abrir/fechar o console (~250 ms).
+- [x] Animação de abrir/fechar o console (250 ms): cortina de chuva por coluna com katakana na frente; desligada com "Reduzir movimento".
 - [ ] Relógio em horário local (está em UTC; `time` com `local-offset` falha com várias threads no Unix). Marcado com `ponytail:` no código.
 - [ ] "Reduzir movimento" não desliga o embaralhamento da trava de saída (`ui/lock.rs`).
-- [ ] Ícones próprios na sidebar compacta: SISTEMA e SAIR colidem no "S" (`icon()` usa a inicial do título).
+- [x] Ícones próprios na sidebar compacta: katakana do `CHARSET` com a inicial do nome em japonês (ｴ ｱ ﾒ ｷ ﾐ ﾛ ｼ ｵ), em `Page::icon()`.
 - [ ] Nenhum `Item::Button { confirm: true }` além de PADRÕES.
 
 ### Comandos / sistema

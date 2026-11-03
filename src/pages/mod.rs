@@ -36,6 +36,10 @@ pub fn registry() -> Vec<Box<dyn Page>> {
     ]
 }
 
+/// Menu CONFIG da barra lateral: agrupa todas as páginas menos SAIR.
+pub const CONFIG: &str = "CONFIG";
+pub const CONFIG_ICON: char = 'ｾ'; // 設定 settei
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PageId {
     Video,
@@ -85,8 +89,18 @@ pub const DEFAULT_HINTS: &[(&str, &str)] =
 pub trait Page {
     fn id(&self) -> PageId;
     fn title(&self) -> &str;
+    /// Ícone da barra lateral compacta: katakana da chuva, inicial do nome em japonês.
     fn icon(&self) -> char {
-        '▸'
+        match self.id() {
+            PageId::Video => 'ｴ',    // 映像 eizō
+            PageId::Rain => 'ｱ',     // 雨 ame
+            PageId::Messages => 'ﾒ', // メッセージ
+            PageId::Keys => 'ｷ',     // キー
+            PageId::A11y => 'ﾐ',     // 見やすさ miyasusa
+            PageId::Log => 'ﾛ',      // ログ
+            PageId::System => 'ｼ',   // システム
+            PageId::Exit => 'ｵ',     // 終わり owari
+        }
     }
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &Ctx);
     fn on_key(&mut self, key: KeyEvent, ctx: &Ctx) -> Option<Action>;
@@ -193,11 +207,6 @@ impl Page for SettingsPage {
 
     fn title(&self) -> &str {
         self.title
-    }
-
-    /// Na barra lateral compacta aparece a inicial do título.
-    fn icon(&self) -> char {
-        self.title.chars().next().unwrap_or('▸')
     }
 
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &Ctx) {

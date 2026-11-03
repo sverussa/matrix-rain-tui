@@ -6,13 +6,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
-use crate::pages::Page;
-
 /// Abaixo desta largura a barra lateral mostra só os ícones.
 const COMPACT_W: u16 = 100;
 
 pub const SIDEBAR_HINTS: &[(&str, &str)] =
     &[("↑↓", "categoria"), ("Enter", "abrir"), ("Esc", "fechar"), (":", "comando"), ("Ctrl+C", "sair")];
+pub const CONFIG_HINTS: &[(&str, &str)] =
+    &[("↑↓", "seção"), ("Enter", "abrir"), ("Esc", "voltar"), (":", "comando"), ("Ctrl+C", "sair")];
 pub const PROMPT_HINTS: &[(&str, &str)] =
     &[("Enter", "executar"), ("Tab", "completar"), ("↑↓", "histórico"), ("Esc", "cancelar")];
 
@@ -71,15 +71,22 @@ pub fn frame(r: &Regions, buf: &mut Buffer, crumb: &str, hints: Line, accent: Co
     buf[(sep_x, bottom)].set_char('┴');
 }
 
-/// Categorias: `▸` + inversão marcam a selecionada (não depende só da cor).
-pub fn sidebar(area: Rect, buf: &mut Buffer, pages: &[Box<dyn Page>], sel: usize, focused: bool, accent: Color) {
+/// Itens `(ícone, título)`: `▸` + inversão marcam o selecionado (não depende só da cor).
+/// `header` (submenu) ocupa a primeira linha como `‹ TÍTULO`.
+pub fn sidebar(area: Rect, buf: &mut Buffer, header: Option<&str>, rows: &[(char, &str)], sel: usize, focused: bool, accent: Color) {
     let compact = area.width < 8;
-    for (i, page) in pages.iter().enumerate().take(area.height as usize) {
+    let mut area = area;
+    if let Some(h) = header {
+        let text = if compact { " ‹".to_string() } else { format!(" ‹ {h}") };
+        Line::styled(text, Style::new().fg(accent).add_modifier(Modifier::BOLD)).render(Rect { height: 1, ..area }, buf);
+        area = Rect { y: area.y + 1, height: area.height.saturating_sub(1), ..area };
+    }
+    for (i, &(icon, title)) in rows.iter().enumerate().take(area.height as usize) {
         let on = i == sel;
         let text = match (compact, on) {
-            (true, _) => format!(" {}", page.icon()),
-            (false, true) => format!(" ▸ {}", page.title()),
-            (false, false) => format!("   {}", page.title()),
+            (true, _) => format!(" {icon}"),
+            (false, true) => format!(" ▸ {title}"),
+            (false, false) => format!("   {title}"),
         };
         let style = match (on, focused) {
             (true, true) => Style::new().fg(Color::Black).bg(accent).add_modifier(Modifier::BOLD),

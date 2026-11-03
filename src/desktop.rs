@@ -26,6 +26,20 @@ use crate::core::rain::Rng;
 static FONT_MAIN: &[u8] = include_bytes!("../assets/fonts/CascadiaMono-Regular.ttf");
 static FONT_KANA: &[u8] = include_bytes!("../assets/fonts/BIZUDGothic-Regular.ttf");
 
+/// No macOS o binário solto não tem ícone (o `.app` usa o do bundle); `with_window_icon` é ignorado lá.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::ClassType;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSData};
+    static ICON: &[u8] = include_bytes!("../assets/icon.png");
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let data = NSData::with_bytes(ICON);
+    if let Some(img) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&img)) };
+    }
+}
+
 /// Tamanho da fonte em pontos lógicos (multiplicado pelo `scale_factor` da tela).
 const FONT_PT: f64 = 16.0;
 const FRAME: Duration = Duration::from_micros(1_000_000 / 60);
@@ -85,6 +99,8 @@ impl Desktop {
 impl ApplicationHandler for Desktop {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.window.is_none() {
+            #[cfg(target_os = "macos")]
+            set_dock_icon();
             if let Err(e) = self.init(el) {
                 self.fail(el, e);
             }

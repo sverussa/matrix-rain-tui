@@ -34,10 +34,6 @@ impl Page for KeysPage {
         "ATALHOS"
     }
 
-    fn icon(&self) -> char {
-        '?'
-    }
-
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &Ctx) {
         render_lines(area, buf, KEYS.iter().map(|(k, what)| format!("{k:<18} {what}")), ctx.accent);
     }

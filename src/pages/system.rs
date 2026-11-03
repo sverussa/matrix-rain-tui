@@ -30,10 +30,6 @@ impl Page for SystemPage {
         "SISTEMA"
     }
 
-    fn icon(&self) -> char {
-        'S'
-    }
-
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &Ctx) {
         let lines = match ctx.sys {
             None => vec!["  coletando dados…".to_string()],

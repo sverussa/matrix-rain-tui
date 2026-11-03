@@ -1046,6 +1046,9 @@ name = "matrix-rain"
 version = "0.1.0"
 dependencies = [
  "directories",
+ "objc2 0.5.3",
+ "objc2-app-kit",
+ "objc2-foundation 0.2.2",
  "pollster",
  "ratatui",
  "ratatui-wgpu",

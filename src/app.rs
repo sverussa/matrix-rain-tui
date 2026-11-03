@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Widget};
 use ratatui::Frame;
@@ -20,9 +20,9 @@ use crate::action::Action;
 use crate::commands;
 use crate::config;
 use crate::core::message::{Message, MESSAGES, MSG_EVERY, MSG_MINUTES};
-use crate::core::rain::{Field, Rng, DENSITY, TRAIL};
+use crate::core::rain::{Field, Rng, CHARSET, DENSITY, TRAIL};
 use crate::core::theme::{Palette, THEMES};
-use crate::pages::{self, Ctx, Page};
+use crate::pages::{self, render_lines, Ctx, Page, PageId, CONFIG, CONFIG_ICON};
 use crate::sys::SysSnapshot;
 use crate::ui::footer::{self, Status};
 use crate::ui::lock::{LockKey, Unlock};
@@ -45,6 +45,8 @@ const MIN_W: u16 = 60;
 const MIN_H: u16 = 20;
 /// Linhas guardadas no histórico do prompt (só em memória).
 const HISTORY: usize = 50;
+/// Duração da animação de abrir/fechar o console.
+const SHELL_ANIM: Duration = Duration::from_millis(250);
 
 /// Configurações vivas (o que os menus editam). Persistidas em `config.toml`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -139,6 +141,8 @@ pub struct App {
     /// Páginas da barra lateral (`pages::registry()`), e a selecionada.
     pub pages: Vec<Box<dyn Page>>,
     pub page: usize,
+    /// Barra lateral dentro do submenu CONFIG (nível 2). Fora dele: só CONFIG e SAIR.
+    pub in_config: bool,
     /// Texto da linha de comando.
     pub prompt: String,
     /// Comandos já executados (o mais recente no fim) e a posição ao navegar com ↑↓.
@@ -160,6 +164,10 @@ pub struct App {
     last_input: Instant,
     /// Mensagem escondida em andamento (no máximo uma por vez).
     msg: Option<Message>,
+    /// Duração da animação do console (testes zeram) e fração à mostra, 0..=1.
+    pub anim: Duration,
+    shell_p: f32,
+    anim_at: Instant,
     /// Quando a próxima mensagem automática aparece.
     next_msg: Instant,
 }
@@ -181,6 +189,7 @@ impl App {
             focus: Focus::Sidebar,
             pages: pages::registry(),
             page: 0,
+            in_config: false,
             prompt: String::new(),
             history: Vec::new(),
             hist_pos: None,
@@ -195,6 +204,9 @@ impl App {
             paused: false,
             last_input: now,
             msg: None,
+            anim: SHELL_ANIM,
+            shell_p: 0.0,
+            anim_at: now,
             next_msg: now + MSG_EVERY,
         }
     }
@@ -241,6 +253,19 @@ impl App {
         }
         self.applied = self.settings.clone();
         self.config = path;
+    }
+
+    fn exit_page(&self) -> usize {
+        self.pages.iter().position(|p| p.id() == PageId::Exit).unwrap_or(0)
+    }
+
+    fn on_exit(&self) -> bool {
+        self.page == self.exit_page()
+    }
+
+    /// Índices das páginas do submenu CONFIG (todas menos SAIR), na ordem do registro.
+    fn config_pages(&self) -> Vec<usize> {
+        (0..self.pages.len()).filter(|&i| self.pages[i].id() != PageId::Exit).collect()
     }
 
     /// O shell está na tela (console, ou trava aberta a partir dele).
@@ -343,7 +368,6 @@ impl App {
 
     /// Teclas do console, conforme o foco. Editar o prompt e mover o foco é estado local.
     fn console_key(&mut self, key: KeyEvent) -> Option<Action> {
-        let n = self.pages.len();
         match (self.focus, key.code) {
             (_, KeyCode::Esc) => Some(Action::Back),
             (Focus::Prompt, KeyCode::Enter) => Some(Action::RunCommand(self.prompt.clone())),
@@ -377,10 +401,24 @@ impl App {
             }
             (Focus::Prompt, _) => None,
             (_, KeyCode::Char(':')) => Some(Action::OpenPrompt),
-            (Focus::Sidebar, KeyCode::Up) => Some(Action::Navigate(self.pages[(self.page + n - 1) % n].id())),
-            (Focus::Sidebar, KeyCode::Down) => Some(Action::Navigate(self.pages[(self.page + 1) % n].id())),
+            (Focus::Sidebar, KeyCode::Up | KeyCode::Down) if self.in_config => {
+                let cfg = self.config_pages();
+                let (m, pos) = (cfg.len(), cfg.iter().position(|&i| i == self.page).unwrap_or(0));
+                let next = if key.code == KeyCode::Up { (pos + m - 1) % m } else { (pos + 1) % m };
+                Some(Action::Navigate(self.pages[cfg[next]].id()))
+            }
+            // Nível 1: só dois itens, ↑↓ alternam entre CONFIG e SAIR.
+            (Focus::Sidebar, KeyCode::Up | KeyCode::Down) => {
+                self.page = if self.on_exit() { self.config_pages()[0] } else { self.exit_page() };
+                None
+            }
+            (Focus::Sidebar, KeyCode::Left) if self.in_config => Some(Action::Back),
             (Focus::Sidebar, KeyCode::Enter | KeyCode::Right | KeyCode::Tab) => {
-                self.focus = Focus::Page;
+                if self.in_config || self.on_exit() {
+                    self.focus = Focus::Page;
+                } else {
+                    self.in_config = true;
+                }
                 None
             }
             (Focus::Sidebar, _) => None,
@@ -408,6 +446,7 @@ impl App {
                 self.snapshot_on_open();
                 self.mode = Mode::Console;
                 self.focus = Focus::Sidebar;
+                self.in_config = false;
             }
             Action::OpenPrompt => {
                 self.snapshot_on_open();
@@ -417,6 +456,7 @@ impl App {
             Action::Navigate(id) => {
                 if let Some(i) = self.pages.iter().position(|p| p.id() == id) {
                     self.page = i;
+                    self.in_config = id != PageId::Exit;
                     self.mode = Mode::Console;
                 }
             }
@@ -428,6 +468,7 @@ impl App {
                     self.focus = Focus::Sidebar;
                 }
                 (Mode::Console, Focus::Page) => self.focus = Focus::Sidebar,
+                (Mode::Console, Focus::Sidebar) if self.in_config => self.in_config = false,
                 (Mode::Console, Focus::Sidebar) => self.mode = Mode::Idle,
                 (Mode::Lock { from_console: true, .. }, _) => self.mode = Mode::Console,
                 (Mode::Lock { .. } | Mode::Idle, _) => self.mode = Mode::Idle,
@@ -508,11 +549,26 @@ impl App {
         }
     }
 
+    /// Avança `shell_p` em direção a 0 ou 1 conforme o tempo desde o último frame.
+    fn shell_progress(&mut self, now: Instant) -> f32 {
+        let dur = if self.settings.reduce_motion { Duration::ZERO } else { self.anim };
+        let step = match dur.as_secs_f32() {
+            0.0 => 1.0,
+            d => now.saturating_duration_since(self.anim_at).as_secs_f32() / d,
+        };
+        self.anim_at = now;
+        let dir = if self.shell_visible() { step } else { -step };
+        self.shell_p = (self.shell_p + dir).clamp(0.0, 1.0);
+        self.shell_p
+    }
+
     pub fn view(&mut self, frame: &mut Frame) {
         let full = frame.area();
         let accent = color(self.palette.accent);
-        let shell = self.shell_visible();
+        let p = self.shell_progress(Instant::now());
+        let shell = p > 0.0;
         let dim = if self.settings.high_contrast { CONSOLE_DIM_HC } else { CONSOLE_DIM };
+        let dim = 1.0 - (1.0 - dim) * p;
         let buf = frame.buffer_mut();
 
         // Moldura (modo janela).
@@ -543,8 +599,26 @@ impl App {
             Line::styled(line, Style::new().fg(accent)).render(row, buf);
         }
 
-        if shell {
+        if p >= 1.0 {
             self.draw_shell(full, buf);
+        } else if shell {
+            // Cortina de chuva: cada coluna desce com atraso próprio e um katakana claro na frente.
+            let mut tmp = buf.clone();
+            self.draw_shell(full, &mut tmp);
+            let lag = full.height as f32 / 3.0;
+            let head = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
+            for x in full.left()..full.right() {
+                let jitter = ((x as u32).wrapping_mul(2_654_435_761) >> 28) as f32 / 15.0 * lag;
+                let edge = p * (full.height as f32 + lag) - jitter;
+                for y in full.top()..full.bottom() {
+                    let row = (y - full.top()) as f32;
+                    if row < edge - 1.0 {
+                        buf[(x, y)] = tmp[(x, y)].clone();
+                    } else if row < edge && tmp[(x, y)] != buf[(x, y)] {
+                        buf[(x, y)].set_char(CHARSET[self.rng.below(CHARSET.len())]).set_style(head);
+                    }
+                }
+            }
         }
 
         if let Mode::Lock { unlock, .. } = &self.mode {
@@ -564,16 +638,39 @@ impl App {
 
         let r = shell::layout(full);
         let hints = match self.focus {
+            Focus::Sidebar if self.in_config => shell::CONFIG_HINTS,
             Focus::Sidebar => shell::SIDEBAR_HINTS,
             Focus::Page => self.pages[self.page].hints(),
             Focus::Prompt => shell::PROMPT_HINTS,
         };
         let dirty = if self.settings != self.applied { "  ● alterações" } else { "" };
-        let crumb = format!("CONSOLE › {}{dirty}", self.pages[self.page].title());
+        let title = self.pages[self.page].title();
+        let path = match (self.in_config, self.on_exit()) {
+            (true, _) => format!("{CONFIG} › {title}"),
+            (false, true) => title.to_string(),
+            (false, false) => CONFIG.to_string(),
+        };
+        let crumb = format!("CONSOLE › {path}{dirty}");
         shell::frame(&r, buf, &crumb, footer::hints(hints, accent, dim), accent, dim);
-        shell::sidebar(r.sidebar, buf, &self.pages, self.page, self.focus == Focus::Sidebar, accent);
-        let ctx = Ctx { settings: &self.settings, log: &self.log, accent, focused: self.focus == Focus::Page, sys: self.sys.as_ref() };
-        self.pages[self.page].render(r.workspace, buf, &ctx);
+        let cfg = self.config_pages();
+        let sidebar_focus = self.focus == Focus::Sidebar;
+        if self.in_config {
+            let rows: Vec<_> = cfg.iter().map(|&i| (self.pages[i].icon(), self.pages[i].title())).collect();
+            let sel = cfg.iter().position(|&i| i == self.page).unwrap_or(0);
+            shell::sidebar(r.sidebar, buf, Some(CONFIG), &rows, sel, sidebar_focus, accent);
+        } else {
+            let exit = &self.pages[self.exit_page()];
+            let rows = [(CONFIG_ICON, CONFIG), (exit.icon(), exit.title())];
+            shell::sidebar(r.sidebar, buf, None, &rows, self.on_exit() as usize, sidebar_focus, accent);
+        }
+        if !self.in_config && !self.on_exit() {
+            // Nível 1 com CONFIG selecionado: prévia das seções.
+            let lines = cfg.iter().map(|&i| format!("{}  {}", self.pages[i].icon(), self.pages[i].title()));
+            render_lines(r.workspace, buf, lines, accent);
+        } else {
+            let ctx = Ctx { settings: &self.settings, log: &self.log, accent, focused: self.focus == Focus::Page, sys: self.sys.as_ref() };
+            self.pages[self.page].render(r.workspace, buf, &ctx);
+        }
         if !self.feedback.is_empty() {
             let row = Rect { y: r.workspace.bottom().saturating_sub(1), height: 1, ..r.workspace };
             Line::styled(format!(" {}", self.feedback), Style::new().fg(dim)).render(row, buf);
@@ -607,6 +704,7 @@ mod tests {
 
     /// Desenha o app num TestBackend e devolve a tela como texto.
     fn screen(app: &mut App, w: u16, h: u16) -> String {
+        app.anim = Duration::ZERO;
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| app.view(f)).unwrap();
         let buf = term.backend().buffer();
@@ -639,6 +737,29 @@ mod tests {
     }
 
     #[test]
+    fn console_animates() {
+        let mut app = App::new(80, 24, Rng::new(1));
+        let t0 = Instant::now();
+        app.anim_at = t0;
+        app.mode = Mode::Console;
+        assert_eq!(app.shell_progress(t0 + SHELL_ANIM / 2), 0.5);
+        app.mode = Mode::Idle; // inverte no meio sem saltar
+        assert_eq!(app.shell_progress(t0 + SHELL_ANIM * 3 / 4), 0.25);
+        assert_eq!(app.shell_progress(t0 + SHELL_ANIM * 2), 0.0);
+        app.settings.reduce_motion = true; // sem animação
+        app.mode = Mode::Console;
+        assert_eq!(app.shell_progress(t0 + SHELL_ANIM * 2), 1.0);
+    }
+
+    #[test]
+    fn sidebar_icons_are_unique_katakana() {
+        let app = App::new(80, 24, Rng::new(1));
+        let icons: Vec<char> = app.pages.iter().map(|p| p.icon()).collect();
+        assert!(icons.iter().all(|c| CHARSET.contains(c)));
+        assert!(icons.iter().enumerate().all(|(i, c)| !icons[..i].contains(c)));
+    }
+
+    #[test]
     fn console_opens_and_closes() {
         let mut app = App::new(80, 24, Rng::new(1));
         assert!(!screen(&mut app, 80, 24).contains("MATRIX//OS"));
@@ -664,8 +785,9 @@ mod tests {
         for (w, h) in [(60, 20), (80, 24), (160, 48)] {
             let mut app = App::new(w, h, Rng::new(1));
             k(&mut app, KeyCode::Enter);
+            k(&mut app, KeyCode::Enter); // entra em CONFIG
             let s = screen(&mut app, w, h);
-            for text in ["MATRIX//OS", "CONSOLE › VÍDEO", "TEMA", "◂ MATRIX ▸", " > ", "fps", "UTC"] {
+            for text in ["MATRIX//OS", "CONSOLE › CONFIG › VÍDEO", "TEMA", "◂ MATRIX ▸", " > ", "fps", "UTC"] {
                 assert!(s.contains(text), "{w}x{h}: falta {text:?}\n{s}");
             }
             // Barra lateral: nomes inteiros só a partir de 100 colunas; senão, iniciais.
@@ -681,13 +803,30 @@ mod tests {
     fn sidebar_navigation_and_exit_page() {
         let mut app = App::new(160, 48, Rng::new(1));
         k(&mut app, KeyCode::Enter);
-        assert_eq!(app.pages[app.page].id(), PageId::Video);
-        k(&mut app, KeyCode::Up); // dá a volta: SAIR é a última
+        // Nível 1: só CONFIG e SAIR; CONFIG mostra a prévia das seções.
+        let s = screen(&mut app, 160, 48);
+        assert!(s.contains("CONSOLE › CONFIG") && s.contains("▸ CONFIG") && s.contains("ｴ  VÍDEO"), "{s}");
+        assert!(!s.contains("▸ VÍDEO"), "{s}"); // subitens só no nível 2
+        k(&mut app, KeyCode::Up);
         assert_eq!(app.pages[app.page].id(), PageId::Exit);
         assert!(screen(&mut app, 160, 48).contains("CONSOLE › SAIR"));
+        k(&mut app, KeyCode::Down); // volta a CONFIG
+
+        // Nível 2: subitens sem SAIR; ↑ dá a volta até LOG; Esc e ← voltam ao nível 1.
+        k(&mut app, KeyCode::Enter);
+        assert!(app.in_config && app.focus == Focus::Sidebar);
+        let s = screen(&mut app, 160, 48);
+        assert!(s.contains("‹ CONFIG") && s.contains("CONSOLE › CONFIG › VÍDEO") && !s.contains("SAIR"), "{s}");
+        k(&mut app, KeyCode::Up);
+        assert_eq!(app.pages[app.page].id(), PageId::Log);
         k(&mut app, KeyCode::Down);
         assert_eq!(app.pages[app.page].id(), PageId::Video);
-        k(&mut app, KeyCode::Up);
+        k(&mut app, KeyCode::Esc);
+        assert!(!app.in_config && matches!(app.mode, Mode::Console));
+        k(&mut app, KeyCode::Right);
+        k(&mut app, KeyCode::Left);
+        assert!(!app.in_config);
+        k(&mut app, KeyCode::Down);
         assert_eq!(app.pages[app.page].id(), PageId::Exit);
 
         // SAIR → Enter no botão abre a trava; Esc volta ao console.
@@ -708,6 +847,7 @@ mod tests {
     fn video_page_changes_live_state() {
         let mut app = App::new(160, 48, Rng::new(1));
         k(&mut app, KeyCode::Enter);
+        k(&mut app, KeyCode::Enter); // CONFIG
         k(&mut app, KeyCode::Enter); // foco na página VÍDEO
         k(&mut app, KeyCode::Right); // TEMA ▸
         assert_eq!(app.settings.theme, 1);
@@ -731,6 +871,7 @@ mod tests {
     fn new_pages_navigation_and_effects() {
         let mut app = App::new(160, 48, Rng::new(1));
         k(&mut app, KeyCode::Enter);
+        k(&mut app, KeyCode::Enter); // CONFIG
         let expect = [
             (PageId::Rain, "CHUVA", "RASTRO"),
             (PageId::Messages, "MENSAGENS", "INTERVALO min"),
@@ -738,13 +879,12 @@ mod tests {
             (PageId::Keys, "ATALHOS", "reiniciar a chuva"),
             (PageId::A11y, "ACESSIB.", "REDUZIR MOVIM."),
             (PageId::Log, "LOG", "(nenhum evento)"),
-            (PageId::Exit, "SAIR", "ENCERRAR SESSÃO"),
         ];
         for (id, title, text) in expect {
             k(&mut app, KeyCode::Down);
             assert_eq!(app.pages[app.page].id(), id);
             let s = screen(&mut app, 160, 48);
-            assert!(s.contains(&format!("CONSOLE › {title}")) && s.contains(text), "{title}\n{s}");
+            assert!(s.contains(&format!("CONSOLE › CONFIG › {title}")) && s.contains(text), "{title}\n{s}");
             assert!(screen(&mut app, 60, 20).contains("MATRIX//OS")); // cabe no mínimo
         }
 
@@ -786,6 +926,7 @@ mod tests {
         assert_eq!(app.settings, Settings::default());
 
         k(&mut app, KeyCode::Enter);
+        k(&mut app, KeyCode::Enter); // CONFIG
         k(&mut app, KeyCode::Enter); // VÍDEO
         k(&mut app, KeyCode::Right); // tema 1, ao vivo
         assert_eq!(app.settings.theme, 1);
