@@ -90,7 +90,9 @@ impl Desktop {
         let term = Terminal::new(backend)?;
         let cells = term.size()?;
         let seed = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0x9E37_79B9_7F4A_7C15, |d| d.as_nanos() as u64);
-        self.app = Some(App::new(cells.width, cells.height, Rng::new(seed)));
+        let mut app = App::new(cells.width, cells.height, Rng::new(seed));
+        app.sys_rx = Some(crate::sys::spawn());
+        self.app = Some(app);
         self.term = Some(term);
         self.window = Some(window);
         Ok(())

@@ -4,6 +4,18 @@ Chuva digital estilo *Matrix* no terminal, escrita em Rust com [ratatui](https:/
 
 Bibliotecas de UI: [ratcn](https://github.com/kristoferlund/ratcn) (componentes com foco, mouse e hover: botões, abas, listas, campos, diálogos, toasts) e [tachyonfx](https://github.com/ratatui/tachyonfx) (efeitos de transição).
 
+![Chuva digital](docs/img/rain.png)
+
+| Console | Relógio |
+|---|---|
+| ![Console](docs/img/console.png) | ![Relógio](docs/img/clock.png) |
+| **Showcase** | **Sistema** |
+| ![Showcase](docs/img/showcase.png) | ![Sistema](docs/img/system.png) |
+
+Tema CYBERPUNK 2077:
+
+![Tema Cyberpunk](docs/img/theme-cyberpunk.png)
+
 ## Requisitos
 
 - Rust (edition 2021) e Cargo
